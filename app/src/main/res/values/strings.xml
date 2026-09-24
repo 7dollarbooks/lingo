@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Lingo</string>
+    <string name="notification_channel_name">Live translation</string>
+    <string name="notification_channel_desc">Keeps translation and glasses connection active</string>
+    <string name="notification_title">Live translation active</string>
+    <string name="notification_title_glasses">Lingo + glasses</string>
+    <string name="notification_text">Listening via Bluetooth headset</string>
+    <string name="notification_assistant_starting">Starting Lingo assistant…</string>
+    <string name="notification_assistant_listening">Listening via Shokz</string>
+    <string name="notification_assistant_listening_glasses">Listening — glasses connected</string>
+    <string name="notification_assistant_glasses_only">Glasses connected (not listening)</string>
+    <string name="notification_view_last_result">View last result</string>
+</resources>

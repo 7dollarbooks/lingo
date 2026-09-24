@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The glasses file server is HTTP on a Wi-Fi Direct address (192.168.49.x).
+  Domain rules do not match IP literals, so cleartext has to be allowed at the
+  base config. Cloud calls stay HTTPS.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
