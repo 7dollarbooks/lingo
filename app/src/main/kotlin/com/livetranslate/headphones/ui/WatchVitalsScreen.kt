@@ -38,13 +38,20 @@ import com.livetranslate.headphones.watch.WatchVitals
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WatchVitalsScreen(onBack: () -> Unit) {
+fun WatchVitalsScreen(
+    initial: WatchVitals,
+    onVitals: (WatchVitals) -> Unit,
+    onBack: () -> Unit,
+) {
     val context = LocalContext.current
-    var vitals by remember { mutableStateOf(WatchVitals()) }
+    var vitals by remember { mutableStateOf(initial) }
     val client = remember(context) { MoyoungWatchClient(context.applicationContext) }
 
     DisposableEffect(client) {
-        client.start { vitals = it }
+        client.start(initial) { next ->
+            vitals = next
+            onVitals(next)
+        }
         onDispose { client.stop() }
     }
 

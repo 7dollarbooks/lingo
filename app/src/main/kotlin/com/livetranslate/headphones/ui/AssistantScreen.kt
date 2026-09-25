@@ -599,7 +599,7 @@ private fun ExchangeEmptyState() {
                 modifier = Modifier.size(40.dp),
             )
             Text(
-                "Say \"Hey Lingo\" or \"OK Lingo\" to ask something",
+                "Say \"Hey Lingo\", \"Hello Lingo\", or \"OK Lingo\" to ask something",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

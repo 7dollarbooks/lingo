@@ -201,7 +201,7 @@ private fun ApiKeyCard(apiKey: String?, onSave: (String) -> Unit) {
                 Text("Gemini API key", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             }
             Text(
-                "\"Hey Lingo\" / \"OK Lingo\" needs a free Gemini API key to reach the cloud model. " +
+                "\"Hey Lingo\", \"Hello Lingo\", or \"OK Lingo\" needs a free Gemini API key to reach the cloud model. " +
                     "Get one at ai.google.dev (Google AI Studio) — it's free tier, no card required.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

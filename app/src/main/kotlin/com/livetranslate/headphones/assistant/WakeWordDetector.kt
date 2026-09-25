@@ -1,13 +1,13 @@
 package com.livetranslate.headphones.assistant
 
 /**
- * Matches "Hey Lingo", "OK Lingo", or a leading "Lingo" against recognized speech text.
+ * Matches "Hey Lingo", "Hello Lingo", "OK Lingo", or a leading "Lingo" against recognized speech text.
  *
  * On-device STT often mishears "Lingo", so matching is intentionally fuzzy: any
- * hey/ok/okay + a nearby word that looks like "lingo" counts as a wake.
+ * hey/hello/ok + a nearby word that looks like "lingo" counts as a wake.
  */
 object WakeWordDetector {
-    private val wakePrefixes = listOf("hey", "hay", "hi", "ok", "okay", "oke")
+    private val wakePrefixes = listOf("hey", "hay", "hi", "hello", "hallo", "ok", "okay", "oke")
 
     // Exact / near-exact STT spellings we've seen for "Lingo".
     private val exactNames = setOf(

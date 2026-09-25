@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
             val visionInitialPrompt by viewModel.visionInitialPrompt.collectAsState()
             val visionResult by viewModel.visionResult.collectAsState()
             val screen by viewModel.appScreen.collectAsState()
+            val watchVitals by viewModel.watchVitals.collectAsState()
             AppTheme(darkTheme = darkTheme) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -83,6 +84,8 @@ class MainActivity : ComponentActivity() {
                             onBack = { viewModel.setAppScreen(AppScreen.MAIN) },
                         )
                         screen == AppScreen.VITALS -> WatchVitalsScreen(
+                            initial = watchVitals,
+                            onVitals = viewModel::saveWatchVitals,
                             onBack = { viewModel.setAppScreen(AppScreen.MAIN) },
                         )
                         screen == AppScreen.ASSISTANT -> AssistantScreen(

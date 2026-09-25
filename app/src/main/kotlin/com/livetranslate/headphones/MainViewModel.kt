@@ -14,6 +14,7 @@ import com.livetranslate.headphones.glasses.ScannedGlassesDevice
 import com.livetranslate.headphones.translation.LanguageModelManager
 import com.livetranslate.headphones.translation.LanguagePackState
 import com.livetranslate.headphones.vision.VisionResult
+import com.livetranslate.headphones.watch.WatchVitals
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +34,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _appScreen = MutableStateFlow(AppScreen.MAIN)
     val appScreen: StateFlow<AppScreen> = _appScreen.asStateFlow()
+
+    private val _watchVitals = MutableStateFlow(WatchVitals())
+    val watchVitals: StateFlow<WatchVitals> = _watchVitals.asStateFlow()
+
+    fun saveWatchVitals(vitals: WatchVitals) {
+        _watchVitals.value = vitals
+    }
 
     fun setAppScreen(screen: AppScreen) {
         _appScreen.value = screen

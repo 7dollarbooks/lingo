@@ -34,7 +34,8 @@ class MoyoungWatchClient(private val context: Context) {
     private var listener: ((WatchVitals) -> Unit)? = null
     private var vitals = WatchVitals(status = "Connecting to ST9")
 
-    fun start(onUpdate: (WatchVitals) -> Unit) {
+    fun start(previous: WatchVitals, onUpdate: (WatchVitals) -> Unit) {
+        vitals = previous
         listener = onUpdate
         publish()
         val adapter = BluetoothAdapter.getDefaultAdapter()
