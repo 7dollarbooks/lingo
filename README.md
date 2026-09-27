@@ -37,4 +37,18 @@ The app runs a foreground service so translation can continue while the phone is
 .\gradlew.bat :app:installDebug
 ```
 
-On first launch, grant microphone, Bluetooth, nearby Wi-Fi, notifications, and location. Location is used to tell the home Wi-Fi name from other networks. Add a Gemini API key in Settings before asking about a photo.
+On first launch, grant microphone, Bluetooth, nearby Wi-Fi, notifications, and location. Location is used to tell the home Wi-Fi name from other networks.
+
+## Gemini API key
+
+No Gemini API key is stored in this repository. Each install needs its own key, entered in the app under Settings. Lingo keeps that value in encrypted storage on the phone and sends it only as the `x-goog-api-key` header to the Gemini API. Do not commit a key.
+
+The key is required for:
+
+- **Wake-word questions.** “Hey Lingo,” “Hello Lingo,” and “OK Lingo” when the question is answered by Gemini.
+- **SPIT.** Spoken answers to questions while SPIT is on.
+- **Real-time help.** The proactive spoken tips.
+- **Photo questions.** Identifying what is in a glasses or phone photo.
+- **Sign and menu reading through Gemini.** Used when on-device text recognition does not produce a translation.
+
+Listen mode, Conversation mode, the watch screen, and the glasses Wi-Fi photo import do not use the key. A sign that on-device recognition already translates does not use it either.

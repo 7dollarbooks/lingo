@@ -10,6 +10,8 @@ The glasses path already calls the proprietary `com.oudmon.ble` library. A glass
 
 The Oudmon AAR is not in this repository. A glasses build needs that library on your machine. `local.properties` is not committed.
 
+No Gemini API key is in this repository. Do not add one. Enter a key in the app Settings on the phone. It is required for wake-word questions (“Hey Lingo,” “Hello Lingo,” “OK Lingo”), SPIT, real-time help, photo questions, and sign or menu reading that falls through to Gemini. Listen mode, Conversation mode, the watch, and the glasses Wi-Fi import do not use it.
+
 ## Health Mode
 
 Watch code lives in two files:
