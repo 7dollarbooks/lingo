@@ -210,6 +210,13 @@ class RoutedTtsPlayer(
     }
 
     private suspend fun playPrepared(file: File) {
+        if (audioRouter.phoneRoute) {
+            val speaker = audioRouter.outputDevice
+            if (speaker == null || !playFileOnDevice(file, speaker)) {
+                Log.w(TAG, "Phone speaker playback failed")
+            }
+            return
+        }
         val media = audioRouter.outputDevice ?: audioRouter.fallbackA2dpDevice ?: audioRouter.selectA2dpOutput()
         val played = media?.let { playFileOnDevice(file, it) } ?: false
         if (!played) {

@@ -31,8 +31,9 @@ data class HeadsetState(
 )
 
 /**
- * Sends Lingo audio as media (A2DP) to the Shokz. A phone-call route would put the
- * glasses on SCO and disable their shutter, so playback stays on the music path.
+ * Sends Lingo audio as media (A2DP) to the Shokz. Conversation uses the phone speaker
+ * and phone mic instead. A phone-call route would put the glasses on SCO and disable
+ * their shutter, so Shokz playback stays on the music path.
  */
 class BluetoothAudioRouter(private val context: Context) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -86,9 +87,13 @@ class BluetoothAudioRouter(private val context: Context) {
     var fallbackA2dpDevice: AudioDeviceInfo? = null
         private set
 
+    /** Conversation keeps the phone speaker and mic even if the Shokz are connected. */
+    var phoneRoute: Boolean = false
+        private set
+
     private val deviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
-            if (!_active.value) return
+            if (!_active.value || phoneRoute) return
             refreshDevices()
             val glassesTookAudio = addedDevices.any { nameLooksLikeGlasses(it.productName?.toString()) }
             if (glassesTookAudio) {
@@ -97,6 +102,7 @@ class BluetoothAudioRouter(private val context: Context) {
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            if (phoneRoute) return
             val lost = removedDevices.any { it.id == outputDevice?.id }
             if (lost && _active.value) {
                 refreshDevices()
@@ -104,7 +110,12 @@ class BluetoothAudioRouter(private val context: Context) {
         }
     }
 
+    /**
+     * Shokz speaker and Shokz mic, both required. Listen, the assistant, the TTS test,
+     * and loopback all enter through here.
+     */
     suspend fun start(): Boolean {
+        phoneRoute = false
         audioManager.registerAudioDeviceCallback(deviceCallback, null)
         previousMode = audioManager.mode
         // Media strategy (the podcast path) only applies in normal mode.
@@ -114,36 +125,72 @@ class BluetoothAudioRouter(private val context: Context) {
         audioManager.isSpeakerphoneOn = false
 
         // Leave audio focus to the speech recognizer. Holding it here left the mic silent.
-        activatePreferredHeadset()
-        refreshDevices()
-        val media = selectA2dpOutput()
-        if (media == null) {
-            _active.value = false
-            _deviceName.value = null
-            val seen = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val micReady = activatePreferredHeadset()
+        val media = shokzA2dpOutput()
+        val mic = shokzScoInput()
+        if (!micReady || media == null || mic == null) {
+            val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
                 .joinToString { "${it.productName}:${it.type}" }
-            Log.w(TAG, "No Shokz media output. outputs=$seen")
+            val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                .joinToString { "${it.productName}:${it.type}" }
+            Log.w(TAG, "Shokz speaker or mic not confirmed. micReady=$micReady outputs=$outputs inputs=$inputs")
+            stop()
             return false
         }
 
-        inputDevice = selectScoInput()
-        if (inputDevice == null) {
-            val seen = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-                .joinToString { "${it.productName}:${it.type}" }
-            Log.w(TAG, "Shokz mic not active. inputs=$seen")
-        }
+        inputDevice = mic
         outputDevice = media
         fallbackA2dpDevice = media
         _active.value = true
-        _deviceName.value = media.productName?.toString() ?: "Bluetooth headset"
+        _deviceName.value = media.productName?.toString() ?: "Shokz"
         Log.i(
             TAG,
-            "Media chosen id=${media.id} name=${media.productName} addr=${deviceAddress(media)} type=a2dp",
+            "Shokz confirmed speaker id=${media.id} name=${media.productName} mic id=${mic.id} name=${mic.productName}",
         )
         return true
     }
 
+    /**
+     * Phone speaker and phone mic for Conversation. Does not open the Shokz mic.
+     * setCommunicationDevice on the built-in speaker is the speakerphone route;
+     * Android pairs it with the built-in mic, which SpeechRecognizer follows.
+     */
+    suspend fun startPhone(): Boolean {
+        phoneRoute = true
+        audioManager.registerAudioDeviceCallback(deviceCallback, null)
+        previousMode = audioManager.mode
+        if (audioManager.mode != AudioManager.MODE_NORMAL) {
+            audioManager.mode = AudioManager.MODE_NORMAL
+        }
+        stopShokzVoiceRecognition()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.clearCommunicationDevice()
+        }
+        val speaker = findDevice(AudioManager.GET_DEVICES_OUTPUTS, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+        val mic = findDevice(AudioManager.GET_DEVICES_INPUTS, AudioDeviceInfo.TYPE_BUILTIN_MIC)
+        if (speaker == null || mic == null) {
+            Log.w(TAG, "Phone speaker or mic missing speaker=${speaker != null} mic=${mic != null}")
+            stop()
+            return false
+        }
+        val ok = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            audioManager.setCommunicationDevice(speaker)
+        if (!ok) {
+            Log.w(TAG, "Phone speaker setCommunicationDevice failed")
+            stop()
+            return false
+        }
+        inputDevice = mic
+        outputDevice = speaker
+        fallbackA2dpDevice = null
+        _active.value = true
+        _deviceName.value = "Phone"
+        Log.i(TAG, "Phone route speaker id=${speaker.id} mic id=${mic.id}")
+        return true
+    }
+
     fun stop() {
+        phoneRoute = false
         stopShokzVoiceRecognition()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             audioManager.clearCommunicationDevice()
@@ -182,16 +229,31 @@ class BluetoothAudioRouter(private val context: Context) {
     @Deprecated("Use selectA2dpOutput()", ReplaceWith("selectA2dpOutput()"))
     fun findA2dpOutput(): AudioDeviceInfo? = selectA2dpOutput()
 
+    /** A2DP output whose name matches the Shokz heuristic. */
+    private fun shokzA2dpOutput(): AudioDeviceInfo? =
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP &&
+                nameLooksLikeHeadset(it.productName?.toString())
+        }
+
+    /** SCO input whose name matches the Shokz heuristic. */
+    private fun shokzScoInput(): AudioDeviceInfo? =
+        scoCandidates(audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS))
+            .firstOrNull { nameLooksLikeHeadset(it.productName?.toString()) }
+
+    private fun findDevice(flag: Int, type: Int): AudioDeviceInfo? =
+        audioManager.getDevices(flag).firstOrNull { it.type == type }
+
     /** Make the bonded Shokz the active media device, the same path a podcast uses. */
-    private suspend fun activatePreferredHeadset() {
+    private suspend fun activatePreferredHeadset(): Boolean {
         val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
-            ?: return
+            ?: return false
         val shokz = runCatching {
             adapter.bondedDevices.firstOrNull { nameLooksLikeHeadset(it.name) }
         }.getOrNull()
         if (shokz == null) {
             Log.w(TAG, "No bonded Shokz")
-            return
+            return false
         }
         Log.i(TAG, "Switching media and mic to ${shokz.name}")
         withTimeoutOrNull(2_500) {
@@ -229,14 +291,17 @@ class BluetoothAudioRouter(private val context: Context) {
             }
         }
         val deadline = System.currentTimeMillis() + 4_000
-        while (selectScoInput() == null && System.currentTimeMillis() < deadline) {
+        while (shokzScoInput() == null && System.currentTimeMillis() < deadline) {
             delay(200)
         }
-        val sco = selectScoInput()
-        if (sco != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val ok = audioManager.setCommunicationDevice(sco)
-            Log.i(TAG, "Shokz mic setCommunicationDevice ${sco.productName} ok=$ok")
+        val sco = shokzScoInput()
+        if (sco == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            Log.w(TAG, "Shokz mic not active")
+            return false
         }
+        val ok = audioManager.setCommunicationDevice(sco)
+        Log.i(TAG, "Shokz mic setCommunicationDevice ${sco.productName} ok=$ok")
+        return ok
     }
 
     private fun stopShokzVoiceRecognition() {
@@ -276,6 +341,7 @@ class BluetoothAudioRouter(private val context: Context) {
         }
 
     private fun refreshDevices() {
+        if (phoneRoute) return
         inputDevice = selectScoInput()
         fallbackA2dpDevice = selectA2dpOutput()
     }

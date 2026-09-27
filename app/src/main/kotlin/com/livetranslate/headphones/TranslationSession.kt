@@ -49,11 +49,17 @@ class TranslationSession(
 
     suspend fun startTranslation() {
         stopLoopback()
-        if (!audioRouter.start()) {
+        val conversation = _status.value.mode == AppMode.CONVERSATION
+        val routed = if (conversation) audioRouter.startPhone() else audioRouter.start()
+        if (!routed) {
             _status.value = _status.value.copy(
                 isActive = false,
                 scoConnected = false,
-                statusMessage = "Connect Shokz via Bluetooth and enable phone audio",
+                statusMessage = if (conversation) {
+                    "Phone speaker or mic is not available"
+                } else {
+                    "Connect Shokz via Bluetooth and enable phone audio"
+                },
             )
             return
         }
@@ -144,7 +150,7 @@ class TranslationSession(
             loopbackActive = false,
             statusMessage = when (_status.value.mode) {
                 AppMode.LISTEN -> "Listen mode active — phone can stay in pocket"
-                AppMode.CONVERSATION -> "Conversation mode active"
+                AppMode.CONVERSATION -> "Conversation mode — phone speaker and mic"
             },
         )
     }

@@ -24,7 +24,7 @@ The app runs a foreground service so translation can continue while the phone is
 
 1. **Glasses link.** Bluetooth stays connected for commands. A photo taken with the glasses camera button is a full JPEG on the glasses, downloaded over a direct Wi-Fi link.
 2. **Photo questions.** Gemini Flash-Lite describes the photo or reads a sign. The upload is a smaller JPEG. Spoken answers start as sentences arrive.
-3. **Headphones.** Speech recognition and spoken replies use the Shokz OpenRun Pro over media audio.
+3. **Headphones.** Listen mode, the assistant, and the other spoken modes use the Shokz OpenRun Pro mic and play replies there. Conversation mode uses the phone mic and the phone speaker so both people hear the translation.
 4. **Watch.** While the Watch screen is open, Lingo reads the ST9 directly. Heart rate and blood pressure start only when that card is refreshed. Steps and calories are read on connect and can update while the screen stays open.
 
 ## Build
