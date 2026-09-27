@@ -2,7 +2,7 @@
 
 **App name:** Lingo (package `com.livetranslate.headphones`)  
 **Platform:** Android (minSdk 31, targetSdk 35, Kotlin + Jetpack Compose)  
-**Hardware target:** Phone + Shokz OpenRun Pro (Bluetooth SCO for mic + speakers)  
+**Hardware target:** Phone + Shokz OpenRun Pro. Listen, the assistant, the TTS test, and loopback use the Shokz mic and speaker. Conversation uses the phone mic and the phone speaker.  
 **Version:** 1.0.0
 
 ---
@@ -12,10 +12,10 @@
 Lingo has **two mutually exclusive product surfaces**:
 
 ### A. Live translation (original core)
-- Capture speech from the Shokz headset mic over Bluetooth SCO
+- **Listen mode** captures speech from the Shokz mic and speaks English through the Shokz
+- **Conversation mode** captures speech from the phone mic and speaks English through the phone speaker, so both people hear it
 - Detect language; **discard English** (no TTS)
 - Translate other languages → English with **on-device ML Kit**
-- Speak English through the Shokz speakers
 
 ### B. Lingo AI Assistant
 - Wake word: **"Hey Lingo" / "Ok Lingo"** (normal mode)
@@ -47,12 +47,13 @@ Translation and Assistant cannot run at the same time (service stops one when st
              └──────────────┬──────────────┘
                             ▼
               TranslationForegroundService
-              (keeps mic/SCO alive in background)
+              (keeps the mic alive in the background)
                             │
               ┌─────────────┴─────────────┐
               ▼                           ▼
      BluetoothAudioRouter          RoutedTtsPlayer
-     (SCO / headset route)         (TTS → Shokz)
+     (Shokz, or phone in           (Shokz, or the phone
+      Conversation)                 speaker in Conversation)
 ```
 
 ---
@@ -113,19 +114,22 @@ Resources: `AndroidManifest.xml`, `res/values/{strings,themes,colors}.xml`, laun
 ## 4. Feature outline (by subsystem)
 
 ### 4.1 Bluetooth audio
-- Prefer **SCO** (call audio) so mic and TTS land on Shokz
-- Fallback to A2DP for playback when needed
-- Loopback test validates mic → speaker path
+- Listen, the assistant, the TTS test, and loopback require the Shokz speaker and the Shokz mic before they start
+- Conversation uses the phone speaker and the phone mic, including when the Shokz are connected
+- Loopback test validates the Shokz mic → speaker path
 - TTS test phrase validates Shokz output (Google Translate failed this)
 
 ### 4.2 Translation pipeline
 ```
-Shokz mic → SpeechRecognizer → language ID
-  → if English: discard (transcript only)
-  → else: ML Kit → English → RoutedTtsPlayer → Shokz
+Listen:        Shokz mic → SpeechRecognizer → language ID
+                 → if English: discard (transcript only)
+                 → else: ML Kit → English → RoutedTtsPlayer → Shokz
+Conversation:  phone mic → SpeechRecognizer → language ID
+                 → if English: discard (transcript only)
+                 → else: ML Kit → English → RoutedTtsPlayer → phone speaker
 ```
 - **Listen mode**: longer silence thresholds (pocket / ambient)
-- **Conversation mode**: tighter turn-taking
+- **Conversation mode**: tighter turn-taking, played on the phone speaker
 - Language packs downloaded in Settings (Wi‑Fi recommended)
 
 ### 4.3 Lingo Assistant (wake-word mode)
@@ -193,7 +197,7 @@ Continuous STT → WakeWordDetector
 
 ## 7. Runtime flows (short)
 
-**Start translation:** UI → Service `ACTION_START` → `TranslationSession` → SCO + engine.
+**Start translation:** UI → Service `ACTION_START` → `TranslationSession`. Listen confirms the Shokz speaker and mic. Conversation opens the phone speaker and mic.
 
 **Start assistant:** UI → Service `ACTION_START_ASSISTANT` → stops translation if needed → `AssistantSession` → `AssistantEngine`.
 

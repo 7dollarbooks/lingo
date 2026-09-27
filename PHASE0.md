@@ -44,12 +44,12 @@ Run these in order on the phone:
 1. **Loopback** — hear yourself in Shokz (mic + speaker path)
 2. **Test TTS in headphones** — hear test phrase in Shokz (fixes Google Translate output issue)
 3. **Listen mode** on mobile data — foreign speech nearby → English in Shokz
-4. **Conversation mode** — face-to-face → English in Shokz
+4. **Conversation mode** — face-to-face → English from the phone speaker, with the phone mic active
 5. **English discard** — English speech → transcript shows discarded, no TTS
 
 ### Pass criteria
 
 - Test TTS audible in Shokz (this failed in Google Translate)
 - Listen mode works with phone in pocket while others speak nearby
-- Conversation mode matches Samsung Interpreter behavior
+- Conversation mode listens on the phone mic and plays through the phone speaker
 - English speech produces no TTS output
