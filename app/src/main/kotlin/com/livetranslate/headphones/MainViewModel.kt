@@ -1,6 +1,7 @@
 package com.livetranslate.headphones
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.livetranslate.headphones.assistant.AssistanceLevel
@@ -10,7 +11,13 @@ import com.livetranslate.headphones.assistant.HomeNetworkStatus
 import com.livetranslate.headphones.audio.HeadsetState
 import com.livetranslate.headphones.audio.TtsVoiceStyle
 import com.livetranslate.headphones.glasses.GlassesState
+import com.livetranslate.headphones.glasses.vendor.GlassesWifiImport
+import com.livetranslate.headphones.glasses.vendor.VideoImportResult
 import com.livetranslate.headphones.glasses.ScannedGlassesDevice
+import com.livetranslate.headphones.memory.MemoryNote
+import com.livetranslate.headphones.navigation.TravelMode
+import com.livetranslate.headphones.text.TextLine
+import com.livetranslate.headphones.text.TextSource
 import com.livetranslate.headphones.translation.LanguageModelManager
 import com.livetranslate.headphones.translation.LanguagePackState
 import com.livetranslate.headphones.vision.VisionResult
@@ -22,7 +29,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = LiveTranslateApp.from(application)
@@ -112,6 +121,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         assistantSession.completeVisionCapture(jpegBytes, prompt)
 
     fun clearAssistantExchanges() = assistantSession.clearExchanges()
+
+    private val _videoImportStatus = MutableStateFlow("Record on the glasses, then import the video.")
+    val videoImportStatus: StateFlow<String> = _videoImportStatus.asStateFlow()
+
+    private val _videoImporting = MutableStateFlow(false)
+    val videoImporting: StateFlow<Boolean> = _videoImporting.asStateFlow()
+
+    private val _importedVideoUri = MutableStateFlow<Uri?>(null)
+    val importedVideoUri: StateFlow<Uri?> = _importedVideoUri.asStateFlow()
+
+    fun importGlassesVideo() {
+        if (_videoImporting.value) return
+        viewModelScope.launch {
+            _videoImporting.value = true
+            _videoImportStatus.value = "Importing the newest video from the glasses."
+            val result = withContext(Dispatchers.IO) {
+                GlassesWifiImport.importNewestVideo(
+                    getApplication(),
+                    System.currentTimeMillis() + VIDEO_IMPORT_BUDGET_MS,
+                    app.glassesFacade.savedDeviceName.value,
+                )
+            }
+            when (result) {
+                is VideoImportResult.Saved -> {
+                    _importedVideoUri.value = result.uri
+                    _videoImportStatus.value = "Saved ${result.name}."
+                }
+                VideoImportResult.MissingPermission -> {
+                    _videoImportStatus.value = "Allow location and nearby devices, then import again."
+                }
+                VideoImportResult.NoVideo -> {
+                    _videoImportStatus.value = "No video came across. Record on the glasses, then try again."
+                }
+            }
+            _videoImporting.value = false
+        }
+    }
 
     fun askAboutWhatISee() {
         viewModelScope.launch { assistantSession.askAboutWhatISee() }
@@ -221,5 +267,82 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearTranscripts() {
         session.clearTranscripts()
+    }
+
+    val textLines: StateFlow<List<TextLine>> = app.textSink.lines.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        emptyList(),
+    )
+
+    private val _pinnedLineId = MutableStateFlow<Long?>(null)
+    val pinnedLineId: StateFlow<Long?> = _pinnedLineId.asStateFlow()
+
+    fun pinLine(id: Long) {
+        _pinnedLineId.value = if (_pinnedLineId.value == id) null else id
+    }
+
+    fun speakPrivateLine() {
+        val lines = app.textSink.lines.value
+        val pinned = lines.firstOrNull { it.id == _pinnedLineId.value }
+        val line = pinned
+            ?: lines.lastOrNull { it.source == TextSource.CAPTION }
+            ?: lines.lastOrNull()
+            ?: return
+        viewModelScope.launch { session.speakLine(line.text) }
+    }
+
+    val memoryNotes: StateFlow<List<MemoryNote>> = app.memorySession.notes.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        emptyList(),
+    )
+
+    val memoryStatus: StateFlow<String> = app.memorySession.status.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        "Idle",
+    )
+
+    fun rememberNow() {
+        viewModelScope.launch { app.memorySession.remember() }
+    }
+
+    fun startRememberTimer(minutes: Int) = app.memorySession.startTimer(minutes)
+
+    fun cancelRememberTimer() = app.memorySession.cancelTimer()
+
+    fun setNoteKeep(id: String, keep: Boolean) = app.memorySession.setKeep(id, keep)
+
+    val navigationStatus: StateFlow<String> = app.navigationSession.status.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        "Idle",
+    )
+
+    val navigationActive: StateFlow<Boolean> = app.navigationSession.active.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        false,
+    )
+
+    val travelMode: StateFlow<TravelMode> = app.navigationSession.travelMode.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        TravelMode.WALK,
+    )
+
+    fun setTravelMode(mode: TravelMode) = app.navigationSession.setTravelMode(mode)
+
+    fun startNavigation(destination: String) = app.navigationSession.start(destination)
+
+    fun stopNavigation() = app.navigationSession.stop()
+
+    val valhallaBaseUrl: StateFlow<String> = app.appSettings.valhallaBaseUrlFlow
+
+    fun setValhallaBaseUrl(url: String) = app.appSettings.setValhallaBaseUrl(url)
+
+    private companion object {
+        const val VIDEO_IMPORT_BUDGET_MS = 8 * 60_000L
     }
 }

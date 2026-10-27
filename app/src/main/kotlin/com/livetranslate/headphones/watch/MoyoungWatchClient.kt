@@ -30,32 +30,68 @@ class MoyoungWatchClient(private val context: Context) {
     private var payloadMtu = 20
     private var packet = ByteArray(0)
     private var packetFilled = 0
-    private var stage = Stage.IDLE
-    private var listener: ((WatchVitals) -> Unit)? = null
-    private var vitals = WatchVitals(status = "Connecting to ST9")
+    @Volatile private var stage = Stage.IDLE
+    private val listeners = mutableListOf<(WatchVitals) -> Unit>()
+    private var holds = 0
+    private val outbound = ArrayDeque<Outbox>()
+    var onWeatherRequest: (() -> Unit)? = null
+    var onReady: (() -> Unit)? = null
+    /** Spoken on the Shokz when a text line is written to the watch. The watch itself does not buzz. */
+    var onMessageSent: ((String) -> Unit)? = null
+    private var flushing = false
+    @Volatile private var vitals = WatchVitals(status = "Watch idle")
 
-    fun start(previous: WatchVitals, onUpdate: (WatchVitals) -> Unit) {
-        vitals = previous
-        listener = onUpdate
-        publish()
-        val adapter = BluetoothAdapter.getDefaultAdapter()
-        if (adapter == null || !adapter.isEnabled) {
-            publish(vitals.copy(status = "Phone Bluetooth is off"))
-            return
-        }
-        val device = adapter.getRemoteDevice(WATCH_ADDRESS)
-        stage = Stage.CONNECTING
-        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+    private val disconnectRunnable = Runnable {
+        if (holds == 0) disconnectNow()
     }
 
-    fun stop() {
-        stage = Stage.IDLE
-        listener = null
-        main.removeCallbacksAndMessages(null)
-        val current = gatt
-        gatt = null
-        current?.disconnect()
-        current?.close()
+    /** Keep the link up while at least one caller (vitals, captions, memory, navigation) holds it. */
+    fun hold(listener: ((WatchVitals) -> Unit)? = null) {
+        synchronized(this) { holds++ }
+        main.post {
+            if (listener != null && listener !in listeners) listeners.add(listener)
+            listener?.invoke(vitals)
+            ensureConnected()
+        }
+    }
+
+    fun release(listener: ((WatchVitals) -> Unit)? = null) {
+        val left = synchronized(this) {
+            holds = (holds - 1).coerceAtLeast(0)
+            holds
+        }
+        main.post {
+            if (listener != null) listeners.remove(listener)
+            if (left == 0) scheduleDisconnect()
+        }
+    }
+
+    fun snapshot(): WatchVitals = vitals
+
+    fun isReady(): Boolean = stage == Stage.READY
+
+    /**
+     * Queue a finished line. Sent when the link is ready.
+     * [announce] speaks the line on the Shokz as the packet is written.
+     */
+    fun sendMessage(line: String, announce: Boolean = true) {
+        val body = line.trim()
+        if (body.isEmpty()) return
+        enqueue(Outbox.Text(body, announce))
+    }
+
+    /** Queue one Moyoung command. Sent when the link is ready, in order. */
+    fun sendCommand(type: Int, payload: ByteArray) {
+        enqueue(Outbox.Command(type, payload))
+    }
+
+    private fun enqueue(item: Outbox) {
+        main.post {
+            outbound.addLast(item)
+            while (outbound.size > MAX_OUTBOUND) outbound.removeFirst()
+            if (holds > 0) ensureConnected()
+            flushOutbound()
+        }
     }
 
     fun refreshHeartRate() = sendStart(CMD_HEART_RATE, byteArrayOf(0), "Asking the watch for a heart rate")
@@ -90,8 +126,67 @@ class MoyoungWatchClient(private val context: Context) {
 
     private fun publish(next: WatchVitals = vitals) {
         vitals = next
-        val callback = listener ?: return
-        main.post { callback(next) }
+        val current = listeners.toList()
+        if (current.isEmpty()) return
+        main.post { current.forEach { it(next) } }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun ensureConnected() {
+        if (gatt != null || stage == Stage.CONNECTING) return
+        val adapter = BluetoothAdapter.getDefaultAdapter()
+        if (adapter == null || !adapter.isEnabled) {
+            publish(vitals.copy(status = "Phone Bluetooth is off"))
+            return
+        }
+        val device = adapter.getRemoteDevice(WATCH_ADDRESS)
+        stage = Stage.CONNECTING
+        publish(vitals.copy(status = "Connecting to ST9"))
+        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+    }
+
+    private fun scheduleDisconnect() {
+        main.removeCallbacks(disconnectRunnable)
+        if (outbound.isNotEmpty() || (stage != Stage.IDLE && stage != Stage.READY)) {
+            main.postDelayed(disconnectRunnable, DISCONNECT_GRACE_MS)
+        } else {
+            disconnectNow()
+        }
+    }
+
+    private fun disconnectNow() {
+        if (holds > 0) return
+        main.removeCallbacks(disconnectRunnable)
+        stage = Stage.IDLE
+        flushing = false
+        outbound.clear()
+        val current = gatt
+        gatt = null
+        current?.disconnect()
+        current?.close()
+        vitals = vitals.copy(status = "Watch idle")
+    }
+
+    private fun flushOutbound() {
+        if (flushing || stage != Stage.READY) return
+        val link = gatt ?: return
+        val item = outbound.removeFirstOrNull() ?: return
+        flushing = true
+        when (item) {
+            is Outbox.Text -> {
+                writeCommand(
+                    link,
+                    WatchMessages.CMD_SEND_MESSAGE,
+                    WatchMessages.payloadFitting(item.line, payloadMtu.coerceAtLeast(6)),
+                )
+                if (item.announce) onMessageSent?.invoke(item.line)
+            }
+            is Outbox.Command -> writeCommand(link, item.type, item.payload)
+        }
+        main.postDelayed({
+            flushing = false
+            if (outbound.isEmpty() && holds == 0) scheduleDisconnect() else flushOutbound()
+        }, FLUSH_GAP_MS)
     }
 
     private val callback = object : BluetoothGattCallback() {
@@ -101,6 +196,13 @@ class MoyoungWatchClient(private val context: Context) {
                 if (stage != Stage.IDLE) {
                     publish(vitals.copy(status = "Watch link closed ($status)"))
                 }
+                if (this@MoyoungWatchClient.gatt === gatt) {
+                    this@MoyoungWatchClient.gatt = null
+                }
+                gatt.close()
+                stage = Stage.IDLE
+                flushing = false
+                if (holds > 0) main.postDelayed({ if (holds > 0) ensureConnected() }, 2_000)
                 return
             }
             if (status != BluetoothGatt.GATT_SUCCESS) {
@@ -234,16 +336,23 @@ class MoyoungWatchClient(private val context: Context) {
     private fun writeCommand(gatt: BluetoothGatt, type: Int, payload: ByteArray) {
         val service = gatt.getService(SERVICE) ?: return
         val out = service.getCharacteristic(DATA_OUT) ?: return
-        val packet = buildPacket(payloadMtu, type, payload)
+        val packet = MoyoungPackets.buildPacket(payloadMtu, type, payload)
         Log.i(TAG, "tx ${packet.joinToString(" ") { "%02x".format(it) }}")
         out.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        if (Build.VERSION.SDK_INT >= 33) {
-            gatt.writeCharacteristic(out, packet, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-        } else {
-            @Suppress("DEPRECATION")
-            out.value = packet
-            @Suppress("DEPRECATION")
-            gatt.writeCharacteristic(out)
+        val chunk = payloadMtu.coerceAtLeast(20)
+        var offset = 0
+        while (offset < packet.size) {
+            val end = minOf(offset + chunk, packet.size)
+            val slice = packet.copyOfRange(offset, end)
+            if (Build.VERSION.SDK_INT >= 33) {
+                gatt.writeCharacteristic(out, slice, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+            } else {
+                @Suppress("DEPRECATION")
+                out.value = slice
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(out)
+            }
+            offset = end
         }
     }
 
@@ -253,6 +362,8 @@ class MoyoungWatchClient(private val context: Context) {
         publish(vitals.copy(status = "Connected"))
         writeCommand(gatt, CMD_SYNC_TIME, watchTimeBytes())
         readCharacteristic(gatt, gatt.getService(SERVICE)?.getCharacteristic(STEPS))
+        flushOutbound()
+        onReady?.invoke()
     }
 
     private fun applyStandardHeartRate(value: ByteArray) {
@@ -302,6 +413,7 @@ class MoyoungWatchClient(private val context: Context) {
                     publish(vitals.copy(heartBpm = bpm, status = "Heart rate $bpm"))
                 }
             }
+            WatchWeather.CMD_ASK -> onWeatherRequest?.invoke()
             CMD_BLOOD_PRESSURE -> {
                 val payload = parsed.second
                 if (payload.size < 3) return
@@ -321,6 +433,11 @@ class MoyoungWatchClient(private val context: Context) {
         }
     }
 
+    private sealed interface Outbox {
+        data class Text(val line: String, val announce: Boolean) : Outbox
+        data class Command(val type: Int, val payload: ByteArray) : Outbox
+    }
+
     private enum class Stage { IDLE, CONNECTING, NOTIFY_IN, NOTIFY_STEPS, NOTIFY_STANDARD, READY }
 
     companion object {
@@ -330,6 +447,9 @@ class MoyoungWatchClient(private val context: Context) {
         private const val CMD_SYNC_TIME = 49
         private const val CMD_HEART_RATE = 109
         private const val CMD_BLOOD_PRESSURE = 105
+        private const val MAX_OUTBOUND = 20
+        private const val FLUSH_GAP_MS = 250L
+        private const val DISCONNECT_GRACE_MS = 20_000L
 
         private val SERVICE: UUID = UUID.fromString("0000feea-0000-1000-8000-00805f9b34fb")
         private val STEPS: UUID = UUID.fromString("0000fee1-0000-1000-8000-00805f9b34fb")
@@ -358,18 +478,6 @@ class MoyoungWatchClient(private val context: Context) {
             (bytes[offset].toInt() and 0xFF) or
                 ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
                 ((bytes[offset + 2].toInt() and 0xFF) shl 16)
-
-        private fun buildPacket(mtu: Int, type: Int, payload: ByteArray): ByteArray {
-            val packet = ByteArray(payload.size + 5)
-            val length = packet.size
-            packet[0] = 0xFE.toByte()
-            packet[1] = 0xEA.toByte()
-            packet[2] = if (mtu <= 20) 16 else ((32 + (length shr 8)) and 0xFF).toByte()
-            packet[3] = (length and 0xFF).toByte()
-            packet[4] = type.toByte()
-            payload.copyInto(packet, destinationOffset = 5)
-            return packet
-        }
 
         private fun packetLength(fragment: ByteArray): Int? {
             if (fragment.size < 4 || fragment[0] != 0xFE.toByte() || fragment[1] != 0xEA.toByte()) return null

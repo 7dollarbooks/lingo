@@ -21,6 +21,7 @@ class RecognitionPipeline(
     private val processor: TranslationProcessor,
     private val ttsPlayer: RoutedTtsPlayer,
     private val speakerLabel: String,
+    private val speakTranslations: Boolean = true,
     minSegmentChars: Int = 8,
     forceSegmentChars: Int = 14,
 ) {
@@ -37,16 +38,18 @@ class RecognitionPipeline(
             for (segment in segmentChannel) {
                 runCatching { processor.translateRecognizedText(segment, speakerLabel) }
                     .onSuccess { english ->
-                        if (!english.isNullOrBlank()) playChannel.send(english)
+                        if (speakTranslations && !english.isNullOrBlank()) playChannel.send(english)
                     }
                     .onFailure { Log.e(TAG, "segment translate failed", it) }
             }
             playChannel.close()
         }
-        // Ordered playback with synthesize-ahead prefetch inside the player.
-        scope.launch {
-            runCatching { ttsPlayer.playQueue(playChannel) }
-                .onFailure { Log.e(TAG, "play queue failed", it) }
+        if (speakTranslations) {
+            // Ordered playback with synthesize-ahead prefetch inside the player.
+            scope.launch {
+                runCatching { ttsPlayer.playQueue(playChannel) }
+                    .onFailure { Log.e(TAG, "play queue failed", it) }
+            }
         }
     }
 

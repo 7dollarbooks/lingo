@@ -12,6 +12,7 @@ import com.livetranslate.headphones.glasses.FallbackReason
 import com.livetranslate.headphones.glasses.GlassesFacade
 import com.livetranslate.headphones.glasses.GlassesState
 import com.livetranslate.headphones.glasses.StillProvenance
+import com.livetranslate.headphones.memory.MemorySession
 import com.livetranslate.headphones.translation.LanguageModelManager
 import com.livetranslate.headphones.vision.GlassesStillSource
 import com.livetranslate.headphones.vision.PhoneCameraStillSource
@@ -90,6 +91,13 @@ class AssistantSession(
 
     private var lastVisionKind: VisionKind = VisionKind.ObjectIdentify
     private var lastVisionQuery: String = ""
+    private var memorySession: MemorySession? = null
+
+    fun bindMemory(session: MemorySession) {
+        memorySession = session
+    }
+
+    suspend fun capturePhoneJpeg(): ByteArray? = requestPhoneCapture(MemorySession.NOTE_PROMPT)
 
     private val stillSelector = StillSelector(
         glasses = GlassesStillSource(glassesFacade),
@@ -138,6 +146,8 @@ class AssistantSession(
             onExchange = { exchange -> _exchanges.value = (_exchanges.value + exchange).takeLast(50) },
             onListening = { listening -> _status.value = _status.value.copy(listening = listening) },
             runVisionTurn = { kind, query -> runVisionTurn(kind, query) },
+            onRemember = { memorySession?.remember() ?: "Remember is not available." },
+            onRecall = { query -> memorySession?.recall(query) },
         )
         engine = newEngine
 

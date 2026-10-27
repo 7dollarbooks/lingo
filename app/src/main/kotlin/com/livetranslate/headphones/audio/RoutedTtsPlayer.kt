@@ -121,6 +121,21 @@ class RoutedTtsPlayer(
     }
 
     /**
+     * One clear sentence on the music path.
+     * Silence at the front covers the moment Bluetooth starts the stream, which was
+     * chewing up the first words. The rate is slower than the assistant, then restored.
+     */
+    suspend fun playClearly(text: String) {
+        val file = synthesizeToFile(text, rate = 0.8f) ?: return
+        prependSilence(file, silenceMs = 800)
+        try {
+            playPrepared(file)
+        } finally {
+            file.delete()
+        }
+    }
+
+    /**
      * Ordered playback with one-file prefetch: while utterance N plays, utterance N+1
      * synthesizes in parallel so dead air between chunks shrinks.
      */
@@ -165,10 +180,11 @@ class RoutedTtsPlayer(
         appliedVoiceName = null
     }
 
-    private suspend fun synthesizeToFile(text: String): File? = ttsMutex.withLock {
+    private suspend fun synthesizeToFile(text: String, rate: Float = 1.08f): File? = ttsMutex.withLock {
         withContext(Dispatchers.Main) {
             ensureTts()
             if (!ttsReady) return@withContext null
+            textToSpeech?.setSpeechRate(rate)
             val file = File(context.cacheDir, "tts_${UUID.randomUUID()}.wav")
             val utteranceId = UUID.randomUUID().toString()
             val params = Bundle()
@@ -205,8 +221,75 @@ class RoutedTtsPlayer(
                 Log.w(TAG, "synthesize failed for '$text'", e)
                 file.delete()
                 null
+            } finally {
+                textToSpeech?.setSpeechRate(1.08f)
             }
         }
+    }
+
+    /** Leading silence so the first word is not the sample Bluetooth drops while the stream locks. */
+    private fun prependSilence(file: File, silenceMs: Int) {
+        val bytes = file.readBytes()
+        if (bytes.size < 44) return
+        if (String(bytes, 0, 4, Charsets.US_ASCII) != "RIFF") return
+        if (String(bytes, 8, 4, Charsets.US_ASCII) != "WAVE") return
+        var channels = 1
+        var sampleRate = 22_050
+        var bits = 16
+        var pos = 12
+        var dataPos = -1
+        var dataSize = 0
+        while (pos + 8 <= bytes.size) {
+            val id = String(bytes, pos, 4, Charsets.US_ASCII)
+            val size = leInt(bytes, pos + 4)
+            if (id == "fmt " && pos + 8 + 16 <= bytes.size) {
+                channels = leShort(bytes, pos + 10).coerceAtLeast(1)
+                sampleRate = leInt(bytes, pos + 12).coerceAtLeast(1)
+                bits = leShort(bytes, pos + 22).coerceAtLeast(8)
+            }
+            if (id == "data") {
+                dataPos = pos
+                dataSize = size
+                break
+            }
+            val step = 8 + size + (size and 1)
+            if (step <= 0) return
+            pos += step
+        }
+        if (dataPos < 0 || dataPos + 8 + dataSize > bytes.size) return
+        val frame = channels * (bits / 8)
+        if (frame <= 0) return
+        val silenceBytes = (sampleRate.toLong() * silenceMs / 1000L).toInt() * frame
+        if (silenceBytes <= 0) return
+        val silence = ByteArray(silenceBytes)
+        val pcm = bytes.copyOfRange(dataPos + 8, dataPos + 8 + dataSize)
+        val after = bytes.copyOfRange(dataPos + 8 + dataSize, bytes.size)
+        val newDataSize = silenceBytes + pcm.size
+        val out = ByteArray(dataPos + 8 + newDataSize + after.size)
+        bytes.copyInto(out, 0, 0, dataPos + 8)
+        putLeInt(out, dataPos + 4, newDataSize)
+        silence.copyInto(out, dataPos + 8)
+        pcm.copyInto(out, dataPos + 8 + silenceBytes)
+        after.copyInto(out, dataPos + 8 + newDataSize)
+        putLeInt(out, 4, out.size - 8)
+        file.writeBytes(out)
+        Log.i(TAG, "prepended ${silenceMs}ms silence rate=$sampleRate ch=$channels bits=$bits")
+    }
+
+    private fun leInt(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xFF) or
+            ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
+            ((bytes[offset + 3].toInt() and 0xFF) shl 24)
+
+    private fun leShort(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xFF) or ((bytes[offset + 1].toInt() and 0xFF) shl 8)
+
+    private fun putLeInt(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = value.toByte()
+        bytes[offset + 1] = (value shr 8).toByte()
+        bytes[offset + 2] = (value shr 16).toByte()
+        bytes[offset + 3] = (value shr 24).toByte()
     }
 
     private suspend fun playPrepared(file: File) {

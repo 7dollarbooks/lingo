@@ -1,6 +1,7 @@
 package com.livetranslate.headphones.ui
 
 import android.Manifest
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -47,6 +48,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -99,6 +101,11 @@ fun AssistantScreen(
     val network by viewModel.homeNetworkStatus.collectAsState()
     val apiKey by viewModel.apiKey.collectAsState()
     val voiceStyle by viewModel.ttsVoiceStyle.collectAsState()
+    val memoryStatus by viewModel.memoryStatus.collectAsState()
+    val memoryNotes by viewModel.memoryNotes.collectAsState()
+    val videoImportStatus by viewModel.videoImportStatus.collectAsState()
+    val videoImporting by viewModel.videoImporting.collectAsState()
+    val importedVideoUri by viewModel.importedVideoUri.collectAsState()
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -237,6 +244,39 @@ fun AssistantScreen(
             }
 
             item {
+                GlassesVideoCard(
+                    status = videoImportStatus,
+                    importing = videoImporting,
+                    canShare = importedVideoUri != null,
+                    onImport = viewModel::importGlassesVideo,
+                    onShare = {
+                        val uri = importedVideoUri ?: return@GlassesVideoCard
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "video/mp4"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            clipData = ClipData.newRawUri("video", uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        val chooser = Intent.createChooser(send, "Share video").apply {
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(chooser)
+                    },
+                )
+            }
+
+            item {
+                MemoryCard(
+                    status = memoryStatus,
+                    notes = memoryNotes,
+                    onRemember = viewModel::rememberNow,
+                    onStartTimer = viewModel::startRememberTimer,
+                    onCancelTimer = viewModel::cancelRememberTimer,
+                    onKeep = viewModel::setNoteKeep,
+                )
+            }
+
+            item {
                 ExchangeHeader(count = exchanges.size, onClear = viewModel::clearAssistantExchanges)
             }
 
@@ -244,6 +284,84 @@ fun AssistantScreen(
                 item { ExchangeEmptyState() }
             } else {
                 items(exchanges.reversed()) { exchange -> ExchangeCard(exchange) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GlassesVideoCard(
+    status: String,
+    importing: Boolean,
+    canShare: Boolean,
+    onImport: () -> Unit,
+    onShare: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Glasses video", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(status, style = MaterialTheme.typography.bodyMedium)
+            Button(
+                onClick = onImport,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !importing,
+            ) { Text(if (importing) "Importing" else "Import video") }
+            OutlinedButton(
+                onClick = onShare,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = canShare && !importing,
+            ) { Text("Share") }
+        }
+    }
+}
+
+@Composable
+private fun MemoryCard(
+    status: String,
+    notes: List<com.livetranslate.headphones.memory.MemoryNote>,
+    onRemember: () -> Unit,
+    onStartTimer: (Int) -> Unit,
+    onCancelTimer: () -> Unit,
+    onKeep: (String, Boolean) -> Unit,
+) {
+    var minutes by remember { mutableStateOf("5") }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Memory", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(status, style = MaterialTheme.typography.bodyMedium)
+            Button(onClick = onRemember, modifier = Modifier.fillMaxWidth()) { Text("Remember this") }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = minutes,
+                    onValueChange = { minutes = it.filter { ch -> ch.isDigit() }.take(3) },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("Minutes") },
+                )
+                OutlinedButton(onClick = { onStartTimer(minutes.toIntOrNull() ?: 5) }) { Text("Start timer") }
+            }
+            TextButton(onClick = onCancelTimer) { Text("Cancel timer") }
+            notes.reversed().forEach { note ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(note.text, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    Text("Keep", style = MaterialTheme.typography.labelMedium)
+                    Switch(checked = note.keep, onCheckedChange = { onKeep(note.id, it) })
+                }
             }
         }
     }

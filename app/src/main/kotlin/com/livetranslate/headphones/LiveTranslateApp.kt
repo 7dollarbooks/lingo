@@ -8,7 +8,13 @@ import com.livetranslate.headphones.assistant.NetworkMonitor
 import com.livetranslate.headphones.glasses.GlassesFacade
 import com.livetranslate.headphones.glasses.GlassesRepository
 import com.livetranslate.headphones.glasses.vendor.OudmonSdkBootstrap
+import com.livetranslate.headphones.memory.MemorySession
+import com.livetranslate.headphones.memory.MemoryStore
+import com.livetranslate.headphones.navigation.NavigationSession
+import com.livetranslate.headphones.text.TextSink
 import com.livetranslate.headphones.translation.LanguageModelManager
+import com.livetranslate.headphones.watch.MoyoungWatchClient
+import com.livetranslate.headphones.watch.WatchWeatherPusher
 
 class LiveTranslateApp : Application() {
     lateinit var languageModelManager: LanguageModelManager
@@ -27,13 +33,33 @@ class LiveTranslateApp : Application() {
         private set
     lateinit var assistantSession: AssistantSession
         private set
+    lateinit var watchClient: MoyoungWatchClient
+        private set
+    lateinit var textSink: TextSink
+        private set
+    lateinit var memoryStore: MemoryStore
+        private set
+    lateinit var memorySession: MemorySession
+        private set
+    lateinit var navigationSession: NavigationSession
+        private set
+    lateinit var watchWeather: WatchWeatherPusher
+        private set
 
     override fun onCreate() {
         super.onCreate()
         OudmonSdkBootstrap.init(this)
         languageModelManager = LanguageModelManager(this)
-        translationSession = TranslationSession(this, languageModelManager)
         appSettings = AppSettings(this)
+        watchClient = MoyoungWatchClient(this)
+        watchWeather = WatchWeatherPusher(this, watchClient)
+        watchClient.onWeatherRequest = { watchWeather.onWatchAsked() }
+        watchClient.onReady = { watchWeather.onConnected() }
+        textSink = TextSink(watchClient)
+        memoryStore = MemoryStore(this)
+        memoryStore.purgeExpired(System.currentTimeMillis())
+        translationSession = TranslationSession(this, languageModelManager, textSink)
+        watchClient.onMessageSent = { line -> translationSession.announceOnShokz(line) }
         assistantSettings = AssistantSettings(this)
         networkMonitor = NetworkMonitor(this)
         llmClient = LlmClient(assistantSettings, networkMonitor)
@@ -45,6 +71,23 @@ class LiveTranslateApp : Application() {
             assistantSettings,
             glassesFacade,
             languageModelManager,
+        )
+        memorySession = MemorySession(
+            context = this,
+            glasses = glassesFacade,
+            llm = llmClient,
+            store = memoryStore,
+            watch = watchClient,
+            textSink = textSink,
+            phonePhoto = { assistantSession.capturePhoneJpeg() },
+        )
+        assistantSession.bindMemory(memorySession)
+        navigationSession = NavigationSession(
+            context = this,
+            settings = appSettings,
+            textSink = textSink,
+            watch = watchClient,
+            speech = translationSession,
         )
     }
 

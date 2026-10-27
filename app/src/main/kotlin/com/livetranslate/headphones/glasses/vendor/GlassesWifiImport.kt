@@ -12,6 +12,8 @@ import android.provider.MediaStore
 import android.net.ConnectivityManager
 import android.net.MacAddress
 import android.net.Network
+import android.net.Uri
+import android.content.ContentUris
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
@@ -20,6 +22,7 @@ import android.os.Build
 import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.livetranslate.headphones.glasses.AlbumList
 import com.oudmon.ble.base.communication.LargeDataHandler
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyListener
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyRsp
@@ -40,12 +43,37 @@ import kotlinx.coroutines.withContext
 internal object GlassesWifiImport {
     private const val TAG = "GlassesCap"
     private const val LISTENER_ID = 2
+    private const val VIDEO_DIR = "Movies/Lingo/"
 
     suspend fun importNewestJpeg(
         context: Context,
         deadlineEpochMs: Long,
         glassesName: String?,
-    ): ByteArray? = withContext(Dispatchers.IO) {
+    ): ByteArray? = openAlbum(context, deadlineEpochMs, glassesName) { ip, network ->
+        downloadNewestJpeg(context.applicationContext, ip, network)
+    }
+
+    suspend fun importNewestVideo(
+        context: Context,
+        deadlineEpochMs: Long,
+        glassesName: String?,
+    ): VideoImportResult {
+        if (!hasP2pPermission(context)) {
+            Log.e(TAG, "wifi import missing NEARBY_WIFI_DEVICES or location permission")
+            return VideoImportResult.MissingPermission
+        }
+        val saved = openAlbum(context, deadlineEpochMs, glassesName) { ip, network ->
+            downloadNewestVideo(context.applicationContext, ip, network)
+        }
+        return saved ?: VideoImportResult.NoVideo
+    }
+
+    private suspend fun <T> openAlbum(
+        context: Context,
+        deadlineEpochMs: Long,
+        glassesName: String?,
+        block: (ip: String, network: Network?) -> T?,
+    ): T? = withContext(Dispatchers.IO) {
         if (!hasP2pPermission(context)) {
             Log.e(TAG, "wifi import missing NEARBY_WIFI_DEVICES or location permission")
             return@withContext null
@@ -149,7 +177,7 @@ internal object GlassesWifiImport {
         }
         ContextCompat.registerReceiver(app, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
 
-        var jpeg: ByteArray? = null
+        var result: T? = null
         try {
             // HeyCyan album sync LE2/t1.y1: glasses control 02 01 04 01.
             val payload = byteArrayOf(0x02, 0x01, 0x04, 0x01)
@@ -181,7 +209,7 @@ internal object GlassesWifiImport {
                 p2pNetwork,
             )
             if (ip != null && System.currentTimeMillis() < deadlineEpochMs) {
-                jpeg = downloadNewestJpeg(app, ip, p2pNetwork.get())
+                result = block(ip, p2pNetwork.get())
             }
         } catch (t: Throwable) {
             Log.e(TAG, "wifi import failed", t)
@@ -192,7 +220,7 @@ internal object GlassesWifiImport {
             runCatching { cm.bindProcessToNetwork(null) }
             removeListener()
         }
-        jpeg
+        result
     }
 
     private suspend fun waitForIp(
@@ -263,7 +291,7 @@ internal object GlassesWifiImport {
                 conn.requestMethod = "GET"
                 if (conn.responseCode == HttpURLConnection.HTTP_OK) {
                     val text = conn.inputStream.bufferedReader().use { it.readText() }
-                    if (text.contains(".jpg", ignoreCase = true)) return true
+                    if (AlbumList.hasReachableAlbum(text)) return true
                 }
             } catch (t: Throwable) {
                 Log.d(TAG, "wifi probe $url ${t.message}")
@@ -298,12 +326,87 @@ internal object GlassesWifiImport {
         return null
     }
 
-    /** Timestamp names sort in capture order. One name per line, or the last token on the line. */
     private fun jpegNames(list: String): List<String> =
-        list.lineSequence().mapNotNull { line ->
-            val token = line.trim().split(Regex("\\s+")).lastOrNull().orEmpty()
-            token.takeIf { it.endsWith(".jpg", ignoreCase = true) || it.endsWith(".jpeg", ignoreCase = true) }
-        }.distinct().toList()
+        AlbumList.fileNames(list, AlbumList::isJpegName)
+
+    private fun downloadNewestVideo(context: Context, ip: String, network: Network?): VideoImportResult.Saved? {
+        val list = listUrls(ip).firstNotNullOfOrNull { url ->
+            val text = httpText(context, url, network)
+            text?.takeIf { AlbumList.newestVideoName(it) != null }
+        } ?: return null
+        val listed = AlbumList.newestVideoName(list) ?: return null
+        findStoredVideo(context, listed)?.let { existing ->
+            Log.i(TAG, "wifi video already stored $listed")
+            return VideoImportResult.Saved(listed, existing)
+        }
+        Log.i(TAG, "wifi newest video=$listed")
+        for (base in fileBases(ip)) {
+            val uri = streamVideo(context, base + listed, listed, network)
+            if (uri != null) return VideoImportResult.Saved(listed, uri)
+        }
+        return null
+    }
+
+    private fun findStoredVideo(context: Context, name: String): Uri? {
+        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        context.contentResolver.query(
+            collection,
+            arrayOf(MediaStore.Video.Media._ID),
+            "${MediaStore.Video.Media.DISPLAY_NAME}=? AND ${MediaStore.Video.Media.RELATIVE_PATH}=?",
+            arrayOf(name, VIDEO_DIR),
+            null,
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return ContentUris.withAppendedId(collection, cursor.getLong(0))
+        }
+        return null
+    }
+
+    /** Stream the clip into Movies/Lingo. A full video does not fit in one byte array. */
+    private fun streamVideo(context: Context, url: String, name: String, network: Network?): Uri? {
+        val conn = open(context, url, network) ?: return null
+        val resolver = context.contentResolver
+        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, name)
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, VIDEO_DIR)
+            put(MediaStore.Video.Media.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(collection, values)
+        if (uri == null) {
+            conn.disconnect()
+            return null
+        }
+        return try {
+            conn.connectTimeout = 8_000
+            conn.readTimeout = 120_000
+            conn.requestMethod = "GET"
+            if (conn.responseCode != HttpURLConnection.HTTP_OK) {
+                resolver.delete(uri, null, null)
+                return null
+            }
+            val written = resolver.openOutputStream(uri)?.use { out ->
+                conn.inputStream.use { input -> input.copyTo(out) }
+            } ?: 0L
+            if (written <= 0L) {
+                resolver.delete(uri, null, null)
+                null
+            } else {
+                values.clear()
+                values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                Log.i(TAG, "wifi video stored $VIDEO_DIR$name ${written}B")
+                uri
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "wifi video GET $url ${t.message}")
+            resolver.delete(uri, null, null)
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
 
     private fun newestDir(context: Context): File =
         File(context.cacheDir, "glasses_newest").apply { mkdirs() }
@@ -451,4 +554,10 @@ internal object GlassesWifiImport {
             LargeDataHandler.getInstance().removeOutDeviceListener(LISTENER_ID)
         }
     }
+}
+
+internal sealed interface VideoImportResult {
+    data class Saved(val name: String, val uri: Uri) : VideoImportResult
+    data object MissingPermission : VideoImportResult
+    data object NoVideo : VideoImportResult
 }

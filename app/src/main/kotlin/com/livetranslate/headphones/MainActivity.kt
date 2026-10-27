@@ -127,6 +127,14 @@ class MainActivity : ComponentActivity() {
         when (intent?.action) {
             ACTION_VIEW_LAST_VISION_RESULT -> viewModel.reopenLastVisionResult()
             ACTION_OPEN_VITALS -> viewModel.setAppScreen(AppScreen.VITALS)
+            TranslationForegroundService.ACTION_TEST_WATCH -> {
+                val line = intent.getStringExtra(TranslationForegroundService.EXTRA_LINE)
+                val service = Intent(this, TranslationForegroundService::class.java).apply {
+                    action = TranslationForegroundService.ACTION_TEST_WATCH
+                    if (!line.isNullOrBlank()) putExtra(TranslationForegroundService.EXTRA_LINE, line)
+                }
+                ContextCompat.startForegroundService(this, service)
+            }
         }
     }
 
@@ -205,5 +213,6 @@ class MainActivity : ComponentActivity() {
         const val ACTION_VIEW_LAST_VISION_RESULT =
             "com.livetranslate.headphones.VIEW_LAST_VISION_RESULT"
         const val ACTION_OPEN_VITALS = "com.livetranslate.headphones.OPEN_VITALS"
+        const val ACTION_TEST_WATCH = TranslationForegroundService.ACTION_TEST_WATCH
     }
 }

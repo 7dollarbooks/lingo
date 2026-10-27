@@ -7,6 +7,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -52,6 +53,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -63,6 +65,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,11 +76,15 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.livetranslate.headphones.AppMode
 import com.livetranslate.headphones.MainViewModel
 import com.livetranslate.headphones.SessionStatus
 import com.livetranslate.headphones.TranscriptEntry
 import com.livetranslate.headphones.audio.HeadsetState
+import com.livetranslate.headphones.navigation.TravelMode
+import com.livetranslate.headphones.text.TextLine
+import com.livetranslate.headphones.text.TextSource
 import com.livetranslate.headphones.translation.LanguagePackState
 import com.livetranslate.headphones.translation.SupportedLanguages
 
@@ -94,6 +103,11 @@ fun MainScreen(
 ) {
     val status by viewModel.status.collectAsState()
     val transcripts by viewModel.transcripts.collectAsState()
+    val textLines by viewModel.textLines.collectAsState()
+    val pinnedLineId by viewModel.pinnedLineId.collectAsState()
+    val navigationStatus by viewModel.navigationStatus.collectAsState()
+    val navigationActive by viewModel.navigationActive.collectAsState()
+    val travelMode by viewModel.travelMode.collectAsState()
     val modelsReady by viewModel.modelsReady.collectAsState()
     val downloadedLanguages by viewModel.downloadedLanguages.collectAsState()
     val activeSource by viewModel.activeSourceLanguage.collectAsState()
@@ -173,17 +187,54 @@ fun MainScreen(
             }
 
             item {
-                TranscriptHeader(
-                    count = transcripts.size,
-                    onClear = viewModel::clearTranscripts,
+                NavigationCard(
+                    status = navigationStatus,
+                    active = navigationActive,
+                    mode = travelMode,
+                    onMode = viewModel::setTravelMode,
+                    onStart = viewModel::startNavigation,
+                    onStop = viewModel::stopNavigation,
                 )
             }
 
-            if (transcripts.isEmpty()) {
-                item { TranscriptEmptyState() }
+            if (status.mode == AppMode.LISTEN) {
+                val captions = textLines.filter { it.source == TextSource.CAPTION }
+                item {
+                    CaptionHeader(
+                        count = captions.size,
+                        onClear = viewModel::clearTranscripts,
+                        onPrivate = viewModel::speakPrivateLine,
+                        privateEnabled = captions.isNotEmpty(),
+                    )
+                }
+                val pinned = captions.firstOrNull { it.id == pinnedLineId }
+                if (pinned != null) {
+                    item {
+                        CaptionLine(line = pinned, pinned = true, onPin = { viewModel.pinLine(pinned.id) })
+                    }
+                }
+                if (captions.isEmpty()) {
+                    item { CaptionEmpty() }
+                } else {
+                    items(captions.reversed()) { line ->
+                        if (line.id != pinnedLineId) {
+                            CaptionLine(line = line, pinned = false, onPin = { viewModel.pinLine(line.id) })
+                        }
+                    }
+                }
             } else {
-                items(transcripts.reversed()) { entry ->
-                    TranscriptCard(entry)
+                item {
+                    TranscriptHeader(
+                        count = transcripts.size,
+                        onClear = viewModel::clearTranscripts,
+                    )
+                }
+                if (transcripts.isEmpty()) {
+                    item { TranscriptEmptyState() }
+                } else {
+                    items(transcripts.reversed()) { entry ->
+                        TranscriptCard(entry)
+                    }
                 }
             }
         }
@@ -503,6 +554,133 @@ private fun SecondaryActions(
             Spacer(Modifier.width(8.dp))
             Text("Test TTS")
         }
+    }
+}
+
+@Composable
+private fun NavigationCard(
+    status: String,
+    active: Boolean,
+    mode: TravelMode,
+    onMode: (TravelMode) -> Unit,
+    onStart: (String) -> Unit,
+    onStop: () -> Unit,
+) {
+    var destination by remember { mutableStateOf("") }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Navigation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(status, style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TravelMode.entries.forEach { option ->
+                    FilterChip(
+                        selected = mode == option,
+                        onClick = { if (!active) onMode(option) },
+                        label = {
+                            Text(
+                                when (option) {
+                                    TravelMode.WALK -> "Walk"
+                                    TravelMode.BIKE -> "Bike"
+                                    TravelMode.CAR -> "Car"
+                                },
+                            )
+                        },
+                    )
+                }
+            }
+            OutlinedTextField(
+                value = destination,
+                onValueChange = { destination = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Destination") },
+                enabled = !active,
+            )
+            if (active) {
+                Button(onClick = onStop, modifier = Modifier.fillMaxWidth()) { Text("Stop navigation") }
+            } else {
+                Button(
+                    onClick = { onStart(destination) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = destination.isNotBlank(),
+                ) { Text("Start navigation") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CaptionHeader(
+    count: Int,
+    onClear: () -> Unit,
+    onPrivate: () -> Unit,
+    privateEnabled: Boolean,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = if (count > 0) "Captions ($count)" else "Captions",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Row {
+            TextButton(onClick = onPrivate, enabled = privateEnabled) { Text("Private line") }
+            if (count > 0) {
+                TextButton(onClick = onClear) { Text("Clear") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CaptionEmpty() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.Black)
+            .padding(20.dp),
+    ) {
+        Text(
+            "Captions show here. Each finished line is read on the Shokz as it goes to the watch.",
+            color = Color.White,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
+private fun CaptionLine(line: TextLine, pinned: Boolean, onPin: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.Black)
+            .clickable(onClick = onPin)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = if (pinned) "${line.speakerLabel} · pinned" else line.speakerLabel,
+            color = Color.White.copy(alpha = 0.75f),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = line.text,
+            color = Color.White,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            lineHeight = 34.sp,
+        )
     }
 }
 

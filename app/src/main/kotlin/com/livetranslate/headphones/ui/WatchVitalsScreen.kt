@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,7 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.livetranslate.headphones.watch.MoyoungWatchClient
+import com.livetranslate.headphones.LiveTranslateApp
 import com.livetranslate.headphones.watch.WatchVitals
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,14 +46,17 @@ fun WatchVitalsScreen(
 ) {
     val context = LocalContext.current
     var vitals by remember { mutableStateOf(initial) }
-    val client = remember(context) { MoyoungWatchClient(context.applicationContext) }
+    val app = context.applicationContext as LiveTranslateApp
+    val client = app.watchClient
+    val weatherStatus by app.watchWeather.status.collectAsState()
 
     DisposableEffect(client) {
-        client.start(initial) { next ->
+        val listener: (WatchVitals) -> Unit = { next ->
             vitals = next
             onVitals(next)
         }
-        onDispose { client.stop() }
+        client.hold(listener)
+        onDispose { client.release(listener) }
     }
 
     Scaffold(
@@ -78,6 +82,11 @@ fun WatchVitalsScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             item { StatusCard(vitals.status) }
+            item {
+                MetricCard("Weather", weatherStatus, "Update weather") {
+                    app.watchWeather.pushFromButton()
+                }
+            }
             item {
                 MetricCard("Heart rate", vitals.heartBpm?.let { "$it bpm" } ?: "Waiting", "Refresh heart rate") {
                     client.refreshHeartRate()

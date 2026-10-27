@@ -244,6 +244,71 @@ class BluetoothAudioRouter(private val context: Context) {
     private fun findDevice(flag: Int, type: Int): AudioDeviceInfo? =
         audioManager.getDevices(flag).firstOrNull { it.type == type }
 
+    /**
+     * Point media at the Shokz and leave the mic alone.
+     * A watch announcement does not need the call route. Opening that route and
+     * dropping it mid-word is what made the last phrase impossible to understand.
+     */
+    suspend fun activateMedia(): AudioDeviceInfo? {
+        val already = shokzA2dpOutput()
+        if (already != null) {
+            outputDevice = already
+            fallbackA2dpDevice = already
+            Log.i(TAG, "Media already on ${already.productName}. Leaving the route alone.")
+            return already
+        }
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+            ?: return null
+        val shokz = runCatching {
+            adapter.bondedDevices.firstOrNull { nameLooksLikeHeadset(it.name) }
+        }.getOrNull()
+        if (shokz != null) {
+            withTimeoutOrNull(2_500) {
+                suspendCancellableCoroutine { cont ->
+                    val listener = object : BluetoothProfile.ServiceListener {
+                        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+                            if (profile == BluetoothProfile.A2DP) {
+                                val ok = setActiveDevice(proxy, shokz)
+                                Log.i(TAG, "A2DP media -> ${shokz.name} ok=$ok")
+                                runCatching { adapter.closeProfileProxy(profile, proxy) }
+                            }
+                            if (cont.isActive) cont.resume(Unit)
+                        }
+
+                        override fun onServiceDisconnected(profile: Int) = Unit
+                    }
+                    if (!adapter.getProfileProxy(context, listener, BluetoothProfile.A2DP) && cont.isActive) {
+                        cont.resume(Unit)
+                    }
+                }
+            }
+        }
+        val deadline = System.currentTimeMillis() + 2_000
+        var media = shokzA2dpOutput() ?: selectA2dpOutput()
+        while (media == null && System.currentTimeMillis() < deadline) {
+            delay(200)
+            media = shokzA2dpOutput() ?: selectA2dpOutput()
+        }
+        if (media == null) {
+            Log.w(TAG, "No Shokz media output")
+            return null
+        }
+        outputDevice = media
+        fallbackA2dpDevice = media
+        Log.i(TAG, "Media switched id=${media.id} name=${media.productName}")
+        delay(1_200)
+        return media
+    }
+
+    suspend fun <T> withMediaFocus(block: suspend () -> T): T {
+        requestAudioFocus()
+        return try {
+            block()
+        } finally {
+            abandonAudioFocus()
+        }
+    }
+
     /** Make the bonded Shokz the active media device, the same path a podcast uses. */
     private suspend fun activatePreferredHeadset(): Boolean {
         val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter

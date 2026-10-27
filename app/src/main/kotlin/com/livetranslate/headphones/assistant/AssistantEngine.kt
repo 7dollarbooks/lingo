@@ -13,6 +13,7 @@ import android.util.Log
 import com.livetranslate.headphones.AssistantExchange
 import com.livetranslate.headphones.ExchangeKind
 import com.livetranslate.headphones.audio.HalfDuplexPolicy
+import com.livetranslate.headphones.memory.RememberIntent
 import com.livetranslate.headphones.audio.RoutedTtsPlayer
 import com.livetranslate.headphones.vision.VisionTimings
 import kotlinx.coroutines.CoroutineScope
@@ -44,6 +45,8 @@ class AssistantEngine(
     private val onListening: (Boolean) -> Unit,
     /** Dual-output vision turn: TTS + queued result screen handled inside session. */
     private val runVisionTurn: suspend (VisionKind, String) -> String,
+    private val onRemember: suspend () -> String = { "Remember is not available." },
+    private val onRecall: suspend (String) -> String? = { null },
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -380,6 +383,42 @@ class AssistantEngine(
         halfDuplex.beginResponse()
         scope.launch {
             onStatus("Thinking…")
+            if (!isSpit && RememberIntent.matches(query)) {
+                val response = runCatching { onRemember() }.getOrElse { it.message ?: "Could not save a note." }
+                onExchange(
+                    AssistantExchange(
+                        kind = ExchangeKind.ASKED,
+                        query = query,
+                        response = response,
+                        hasImage = true,
+                    ),
+                )
+                onStatus("Listening for \"Hey Lingo\"…")
+                runCatching { ttsPlayer.speak(response) }
+                halfDuplex.noteSpoken(response)
+                halfDuplex.endResponse()
+                if (active) withContext(Dispatchers.Main) { scheduleRestartIfSessionEnded() }
+                return@launch
+            }
+            if (!isSpit) {
+                val recalled = runCatching { onRecall(query) }.getOrNull()
+                if (recalled != null) {
+                    onExchange(
+                        AssistantExchange(
+                            kind = ExchangeKind.ASKED,
+                            query = query,
+                            response = recalled,
+                            hasImage = false,
+                        ),
+                    )
+                    onStatus("Listening for \"Hey Lingo\"…")
+                    runCatching { ttsPlayer.speak(recalled) }
+                    halfDuplex.noteSpoken(recalled)
+                    halfDuplex.endResponse()
+                    if (active) withContext(Dispatchers.Main) { scheduleRestartIfSessionEnded() }
+                    return@launch
+                }
+            }
             val systemPrompt = if (isSpit) SPIT_SYSTEM_PROMPT else SYSTEM_PROMPT
             val visionKind = VisionIntent.kind(query)
             val needsVision = visionKind !is VisionKind.None

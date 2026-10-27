@@ -98,7 +98,12 @@ class ListenModeEngine(
         speechRecognizer = SpeechSupport.createRecognizer(context, onDevice).apply {
             setRecognitionListener(recognitionListener)
         }
-        pipeline = RecognitionPipeline(processor, ttsPlayer, speakerLabel = "Ambient")
+        pipeline = RecognitionPipeline(
+            processor,
+            ttsPlayer,
+            speakerLabel = "Ambient",
+            speakTranslations = false,
+        )
         active = true
         listeningStarted = false
         SpeechSupport.buildPlan(context, candidateLanguageTags) { p ->

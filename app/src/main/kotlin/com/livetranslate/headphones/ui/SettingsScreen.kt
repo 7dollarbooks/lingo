@@ -74,6 +74,7 @@ fun SettingsScreen(
     val themeMode by viewModel.themeMode.collectAsState()
     val apiKey by viewModel.apiKey.collectAsState()
     val homeWifiSsids by viewModel.homeWifiSsids.collectAsState()
+    val valhallaUrl by viewModel.valhallaBaseUrl.collectAsState()
 
     LaunchedEffect(Unit) {
         viewModel.refreshLanguagePacks()
@@ -114,6 +115,9 @@ fun SettingsScreen(
                 HomeWifiCard(ssids = homeWifiSsids, onSave = viewModel::setHomeWifiSsids)
             }
             item {
+                ValhallaCard(url = valhallaUrl, onSave = viewModel::setValhallaBaseUrl)
+            }
+            item {
                 SectionLabel("Language packs")
             }
             item { IntroCard() }
@@ -131,6 +135,32 @@ fun SettingsScreen(
                     onDownloadMobile = { viewModel.downloadLanguage(option.code, requireWifi = false) },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ValhallaCard(url: String, onSave: (String) -> Unit) {
+    var draft by remember(url) { mutableStateOf(url) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Navigation router", fontWeight = FontWeight.SemiBold)
+            Text(
+                "OpenStreetMap Valhalla. The phone sends the start and destination only.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Base URL") },
+            )
+            FilledTonalButton(onClick = { onSave(draft) }) { Text("Save router") }
         }
     }
 }

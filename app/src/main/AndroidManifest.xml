@@ -23,6 +23,8 @@
     <!-- Needed to read the current Wi-Fi SSID, so Lingo can tell home Wi-Fi apart from
          other networks and route cloud calls over mobile data otherwise. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <!-- Needed to (un)mute the stream that carries the speech-recognizer beep. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -60,7 +62,7 @@
         <service
             android:name=".service.TranslationForegroundService"
             android:exported="false"
-            android:foregroundServiceType="microphone|connectedDevice" />
+            android:foregroundServiceType="microphone|connectedDevice|location" />
 
         <receiver
             android:name=".GadgetbridgeBleReceiver"

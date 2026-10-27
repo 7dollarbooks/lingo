@@ -25,6 +25,8 @@ import kotlinx.coroutines.launch
 
 class TranslationForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var locationHeld = false
+    private var listenWatchHeld = false
 
     private val app: LiveTranslateApp
         get() = LiveTranslateApp.from(application)
@@ -40,6 +42,10 @@ class TranslationForegroundService : Service() {
                 val modeName = intent.getStringExtra(EXTRA_MODE) ?: AppMode.LISTEN.name
                 val mode = runCatching { AppMode.valueOf(modeName) }.getOrDefault(AppMode.LISTEN)
                 app.translationSession.setMode(mode)
+                if (!listenWatchHeld) {
+                    app.watchClient.hold()
+                    listenWatchHeld = true
+                }
                 startForegroundTyped(buildNotification(getString(R.string.notification_text)))
                 scope.launch {
                     app.assistantSession.stop()
@@ -50,6 +56,42 @@ class TranslationForegroundService : Service() {
             ACTION_STOP -> {
                 scope.launch {
                     app.translationSession.stopTranslation()
+                    if (listenWatchHeld) {
+                        app.watchClient.release()
+                        listenWatchHeld = false
+                    }
+                    if (locationHeld) {
+                        startForegroundLocationOnly(app.navigationSession.status.value)
+                    } else {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
+                }
+            }
+            ACTION_HOLD_LOCATION -> {
+                locationHeld = true
+                val note = intent.getStringExtra(EXTRA_NOTE) ?: "Navigation"
+                val mic = app.translationSession.status.value.isActive ||
+                    app.assistantSession.status.value.isActive
+                if (mic) {
+                    startForegroundTyped(
+                        buildNotification(note),
+                        includeConnectedDevice = isGlassesHeld(),
+                    )
+                } else {
+                    startForegroundLocationOnly(note)
+                }
+            }
+            ACTION_RELEASE_LOCATION -> {
+                locationHeld = false
+                val mic = app.translationSession.status.value.isActive ||
+                    app.assistantSession.status.value.isActive
+                if (mic) {
+                    startForegroundTyped(
+                        buildNotification(app.translationSession.status.value.statusMessage),
+                        includeConnectedDevice = isGlassesHeld(),
+                    )
+                } else {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
@@ -74,6 +116,39 @@ class TranslationForegroundService : Service() {
                     updateNotification(app.translationSession.status.value.statusMessage)
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
+                }
+            }
+            ACTION_TEST_WATCH -> {
+                val line = intent.getStringExtra(EXTRA_LINE)?.trim().orEmpty().ifEmpty { "Lingo test" }
+                val mic = app.translationSession.status.value.isActive ||
+                    app.assistantSession.status.value.isActive
+                app.watchClient.hold()
+                if (mic) {
+                    startForegroundTyped(
+                        buildNotification("Sending a line to the watch"),
+                        includeConnectedDevice = true,
+                    )
+                } else {
+                    startForegroundConnectedOnly("Sending a line to the watch")
+                }
+                scope.launch {
+                    val deadline = System.currentTimeMillis() + 30_000
+                    while (!app.watchClient.isReady() && System.currentTimeMillis() < deadline) {
+                        kotlinx.coroutines.delay(400)
+                    }
+                    // The connect burst (time, steps, weather) fills the GATT queue.
+                    // A message written in that burst is rejected, so wait until it drains.
+                    kotlinx.coroutines.delay(4_000)
+                    app.watchClient.sendMessage(line)
+                    kotlinx.coroutines.delay(2_000)
+                    app.watchClient.release()
+                    val stillNeeded = locationHeld ||
+                        app.translationSession.status.value.isActive ||
+                        app.assistantSession.status.value.isActive
+                    if (!stillNeeded) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
                 }
             }
             ACTION_START_ASSISTANT -> {
@@ -103,8 +178,12 @@ class TranslationForegroundService : Service() {
             ACTION_STOP_ASSISTANT -> {
                 scope.launch {
                     app.assistantSession.stop()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    if (locationHeld) {
+                        startForegroundLocationOnly(app.navigationSession.status.value)
+                    } else {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
                 }
             }
         }
@@ -167,13 +246,32 @@ class TranslationForegroundService : Service() {
         notification: Notification,
         includeConnectedDevice: Boolean = false,
     ) {
-        val type = if (includeConnectedDevice) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        } else {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        if (includeConnectedDevice) {
+            type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        }
+        if (locationHeld) {
+            type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
+    }
+
+    private fun startForegroundConnectedOnly(message: String) {
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildNotification(message, includeConnectedDevice = true),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+        )
+    }
+
+    private fun startForegroundLocationOnly(message: String) {
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildNotification(message),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
+        )
     }
 
     private fun buildNotification(
@@ -237,8 +335,13 @@ class TranslationForegroundService : Service() {
         const val ACTION_LOOPBACK_START = "com.livetranslate.headphones.LOOPBACK_START"
         const val ACTION_LOOPBACK_STOP = "com.livetranslate.headphones.LOOPBACK_STOP"
         const val ACTION_TEST_TTS = "com.livetranslate.headphones.TEST_TTS"
+        const val ACTION_TEST_WATCH = "com.livetranslate.headphones.TEST_WATCH"
+        const val EXTRA_LINE = "line"
         const val ACTION_START_ASSISTANT = "com.livetranslate.headphones.START_ASSISTANT"
         const val ACTION_STOP_ASSISTANT = "com.livetranslate.headphones.STOP_ASSISTANT"
+        const val ACTION_HOLD_LOCATION = "com.livetranslate.headphones.HOLD_LOCATION"
+        const val ACTION_RELEASE_LOCATION = "com.livetranslate.headphones.RELEASE_LOCATION"
         const val EXTRA_MODE = "mode"
+        const val EXTRA_NOTE = "note"
     }
 }

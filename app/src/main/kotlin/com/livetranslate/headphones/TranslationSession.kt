@@ -7,12 +7,15 @@ import com.livetranslate.headphones.audio.LoopbackSession
 import com.livetranslate.headphones.audio.PcmAudioCapture
 import com.livetranslate.headphones.audio.PcmAudioPlayback
 import com.livetranslate.headphones.audio.RoutedTtsPlayer
+import com.livetranslate.headphones.text.TextSink
+import com.livetranslate.headphones.text.TextSource
 import com.livetranslate.headphones.translation.ConversationEngine
 import com.livetranslate.headphones.translation.LanguageModelManager
 import com.livetranslate.headphones.translation.ListenModeEngine
 import com.livetranslate.headphones.translation.SupportedLanguages
 import com.livetranslate.headphones.translation.TranslationEngine
 import com.livetranslate.headphones.translation.TranslationProcessor
+import com.livetranslate.headphones.translation.captionText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,12 +27,15 @@ import kotlinx.coroutines.launch
 class TranslationSession(
     context: Context,
     private val languageModelManager: LanguageModelManager,
+    private val textSink: TextSink,
 ) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val audioRouter = BluetoothAudioRouter(appContext)
     private var ttsPlayer: RoutedTtsPlayer? = null
+    private var routeHeld = false
+    private var speechHolds = 0
     private var capture: PcmAudioCapture? = null
     private var playback: PcmAudioPlayback? = null
     private var loopback: LoopbackSession? = null
@@ -50,7 +56,14 @@ class TranslationSession(
     suspend fun startTranslation() {
         stopLoopback()
         val conversation = _status.value.mode == AppMode.CONVERSATION
-        val routed = if (conversation) audioRouter.startPhone() else audioRouter.start()
+        val routed = if (conversation) {
+            if (routeHeld && speechHolds == 0) releaseRouter()
+            val ok = audioRouter.startPhone()
+            if (ok) routeHeld = true
+            ok
+        } else {
+            ensureShokz()
+        }
         if (!routed) {
             _status.value = _status.value.copy(
                 isActive = false,
@@ -66,13 +79,13 @@ class TranslationSession(
 
         val downloadedCodes = languageModelManager.downloadedSelectedCodes()
         if (downloadedCodes.isEmpty()) {
-            audioRouter.stop()
             _status.value = _status.value.copy(
                 isActive = false,
                 scoConnected = false,
                 modelsReady = false,
                 statusMessage = "Download at least one language pack in Settings",
             )
+            releaseRouter()
             return
         }
 
@@ -88,8 +101,10 @@ class TranslationSession(
                 downloadedCodes.map { SupportedLanguages.recognizerTag(it) }).distinct()
         }
 
-        ttsPlayer = RoutedTtsPlayer(appContext, audioRouter)
-        scope.launch { ttsPlayer?.warmup() }
+        if (ttsPlayer == null) {
+            ttsPlayer = RoutedTtsPlayer(appContext, audioRouter)
+            scope.launch { ttsPlayer?.warmup() }
+        }
         scope.launch {
             val ordered = listOfNotNull(activeSource) + downloadedCodes.filter { it != activeSource }
             languageModelManager.warmup(ordered)
@@ -99,6 +114,11 @@ class TranslationSession(
             selectedSourceLanguage = activeSource,
             onTranscript = { entry ->
                 _transcripts.value = (_transcripts.value + entry).takeLast(100)
+                val caption = captionText(entry)
+                if (caption != null) {
+                    val listen = _status.value.mode == AppMode.LISTEN
+                    textSink.publish(TextSource.CAPTION, entry.speakerLabel, caption, announce = listen)
+                }
             },
             onStatus = { message ->
                 _status.value = _status.value.copy(statusMessage = message)
@@ -131,14 +151,12 @@ class TranslationSession(
 
         runCatching { engine?.start() }.onFailure { err ->
             engine = null
-            ttsPlayer?.shutdown()
-            ttsPlayer = null
-            audioRouter.stop()
             _status.value = _status.value.copy(
                 isActive = false,
                 scoConnected = false,
                 statusMessage = err.message ?: "Failed to start translation",
             )
+            releaseRouter()
             return
         }
 
@@ -158,18 +176,60 @@ class TranslationSession(
     suspend fun stopTranslation() {
         engine?.stop()
         engine = null
-        ttsPlayer?.shutdown()
-        ttsPlayer = null
         capture?.stop()
         playback?.stop()
         capture = null
         playback = null
-        audioRouter.stop()
         _status.value = SessionStatus(mode = _status.value.mode)
+        releaseRouter()
+    }
+
+    /** Navigation holds the Shokz speaker so a turn can be spoken while captions stay quiet. */
+    suspend fun acquireSpeech(): Boolean {
+        if (!ensureShokz()) return false
+        if (ttsPlayer == null) {
+            val player = RoutedTtsPlayer(appContext, audioRouter)
+            ttsPlayer = player
+            player.warmup()
+        }
+        speechHolds++
+        return true
+    }
+
+    fun releaseSpeech() {
+        speechHolds = (speechHolds - 1).coerceAtLeast(0)
+        releaseRouter()
+    }
+
+    /** Read a line on the Shokz music path. Used when that line is written to the watch. */
+    fun announceOnShokz(text: String) {
+        val spoken = "Watch. ${text.trim().replace('-', ' ')}"
+        scope.launch {
+            val cold = !routeHeld && speechHolds == 0
+            if (cold && audioRouter.activateMedia() == null) return@launch
+            val player = ttsPlayer ?: RoutedTtsPlayer(appContext, audioRouter).also { ttsPlayer = it }
+            audioRouter.withMediaFocus { player.playClearly(spoken) }
+            if (cold && !_status.value.isActive && speechHolds == 0) {
+                player.shutdown()
+                if (ttsPlayer === player) ttsPlayer = null
+            }
+        }
+    }
+
+    suspend fun speakLine(text: String) {
+        val clean = text.trim()
+        if (clean.isEmpty()) return
+        if (ttsPlayer == null) {
+            if (!acquireSpeech()) return
+            ttsPlayer?.speak(clean)
+            releaseSpeech()
+            return
+        }
+        ttsPlayer?.speak(clean)
     }
 
     suspend fun testTts() {
-        if (!audioRouter.start()) {
+        if (!ensureShokz()) {
             _status.value = _status.value.copy(
                 statusMessage = "Connect Shokz before TTS test",
             )
@@ -188,17 +248,17 @@ class TranslationSession(
         }.onSuccess {
             _status.value = _status.value.copy(statusMessage = "TTS test complete")
         }
-        if (!_status.value.isActive) {
+        if (!_status.value.isActive && speechHolds == 0) {
             player.shutdown()
             ttsPlayer = null
-            audioRouter.stop()
+            releaseRouter()
         }
     }
 
     fun startLoopback(): Boolean {
         scope.launch {
             stopTranslation()
-            if (!audioRouter.start()) {
+            if (!ensureShokz()) {
                 _status.value = _status.value.copy(
                     loopbackActive = false,
                     statusMessage = "SCO not available for loopback test",
@@ -234,15 +294,32 @@ class TranslationSession(
         playback?.stop()
         capture = null
         playback = null
-        audioRouter.stop()
         _status.value = _status.value.copy(
             loopbackActive = false,
             scoConnected = false,
             statusMessage = "Loopback stopped",
         )
+        releaseRouter()
     }
 
     fun clearTranscripts() {
         _transcripts.value = emptyList()
+        textSink.clear(TextSource.CAPTION)
+    }
+
+    private suspend fun ensureShokz(): Boolean {
+        if (routeHeld) return true
+        val ok = audioRouter.start()
+        routeHeld = ok
+        return ok
+    }
+
+    private fun releaseRouter() {
+        if (_status.value.isActive || _status.value.loopbackActive || speechHolds > 0) return
+        ttsPlayer?.shutdown()
+        ttsPlayer = null
+        if (!routeHeld) return
+        audioRouter.stop()
+        routeHeld = false
     }
 }
