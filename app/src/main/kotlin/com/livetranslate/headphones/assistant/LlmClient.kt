@@ -15,10 +15,6 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 /** A single turn in the running conversation, "user" or "model". */
@@ -30,10 +26,9 @@ class LlmException(message: String, cause: Throwable? = null) : Exception(messag
  * Thin REST client for the Gemini API free tier. No SDK dependency — just OkHttp + manual
  * JSON, matching this app's lean dependency footprint.
  *
- * Cloud calls try a process bind to cellular first. If the phone refuses that bind, the
- * call goes on the active default network with no socket bind. At home that default is
- * Wi-Fi. Away from home the default is cellular, and [NetworkMonitor.runOnCellular]
- * already sends on that route when the bind is refused.
+     * On a saved home Wi-Fi, Gemini uses that network. Anywhere else, including a marina
+     * Wi-Fi that is associated but is not a saved home network, the call tries cellular
+     * first. If the phone refuses that bind, the call goes on the active default network.
  */
 class LlmClient(
     private val settings: AssistantSettings,
@@ -118,6 +113,10 @@ class LlmClient(
     }
 
     private fun <T> executePreferred(block: (OkHttpClient) -> T): T {
+        if (networkMonitor.homeNetworkStatus(settings.homeWifiSsids.value) == HomeNetworkStatus.HOME_WIFI) {
+            Log.i(TAG, "Gemini via default route ${networkMonitor.currentTransport()}")
+            return block(client)
+        }
         if (networkMonitor.cellularNetworkOrNull() != null) {
             try {
                 Log.i(TAG, "Gemini via cellular")
@@ -208,37 +207,10 @@ class LlmClient(
         return reason.isNotBlank() && !reason.equals("FINISH_REASON_UNSPECIFIED", ignoreCase = true)
     }
 
-    /**
-     * Gemini has no live clock of its own — inject this phone's local date/time/zone into
-     * every system instruction so questions like "what time is it?" are answered correctly
-     * for the user's location/settings.
-     */
-    private fun withDeviceContext(systemInstruction: String?): String {
-        val now = Date()
-        val zone = TimeZone.getDefault()
-        val dateFmt = SimpleDateFormat("EEEE, MMMM d, yyyy", Locale.US).apply { timeZone = zone }
-        val timeFmt = SimpleDateFormat("h:mm:ss a", Locale.US).apply { timeZone = zone }
-        val zoneName = zone.getDisplayName(zone.inDaylightTime(now), TimeZone.LONG, Locale.US)
-        val zoneId = zone.id
-        val clockBlock =
-            "Device clock (authoritative — use this for any time/date/timezone question; " +
-                "never invent or guess the time):\n" +
-                "- Local date: ${dateFmt.format(now)}\n" +
-                "- Local time: ${timeFmt.format(now)}\n" +
-                "- Time zone: $zoneName ($zoneId)\n" +
-                "- UTC offset: ${formatUtcOffset(zone, now)}"
-        return listOfNotNull(systemInstruction?.trim()?.ifBlank { null }, clockBlock)
+    /** Same clock paragraph Nitro receives, so a fallback does not change the date line. */
+    private fun withDeviceContext(systemInstruction: String?): String =
+        listOfNotNull(systemInstruction?.trim()?.ifBlank { null }, DeviceClock.block())
             .joinToString("\n\n")
-    }
-
-    private fun formatUtcOffset(zone: TimeZone, now: Date): String {
-        val totalMinutes = zone.getOffset(now.time) / 60_000
-        val sign = if (totalMinutes >= 0) "+" else "-"
-        val abs = kotlin.math.abs(totalMinutes)
-        val hours = abs / 60
-        val minutes = abs % 60
-        return String.format(Locale.US, "UTC%s%02d:%02d", sign, hours, minutes)
-    }
 
     private fun buildRequestBody(
         systemInstruction: String?,

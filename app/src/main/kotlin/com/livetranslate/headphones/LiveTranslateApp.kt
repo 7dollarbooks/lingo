@@ -4,7 +4,9 @@ import android.app.Application
 import com.livetranslate.headphones.assistant.AssistantSession
 import com.livetranslate.headphones.assistant.AssistantSettings
 import com.livetranslate.headphones.assistant.LlmClient
+import com.livetranslate.headphones.assistant.ModelRouter
 import com.livetranslate.headphones.assistant.NetworkMonitor
+import com.livetranslate.headphones.assistant.OllamaClient
 import com.livetranslate.headphones.glasses.GlassesFacade
 import com.livetranslate.headphones.glasses.GlassesRepository
 import com.livetranslate.headphones.glasses.vendor.OudmonSdkBootstrap
@@ -28,6 +30,8 @@ class LiveTranslateApp : Application() {
     lateinit var networkMonitor: NetworkMonitor
         private set
     lateinit var llmClient: LlmClient
+        private set
+    lateinit var modelRouter: ModelRouter
         private set
     lateinit var glassesFacade: GlassesFacade
         private set
@@ -63,11 +67,12 @@ class LiveTranslateApp : Application() {
         assistantSettings = AssistantSettings(this)
         networkMonitor = NetworkMonitor(this)
         llmClient = LlmClient(assistantSettings, networkMonitor)
+        modelRouter = ModelRouter(assistantSettings, llmClient, OllamaClient(assistantSettings))
         glassesFacade = GlassesRepository.getInstance(this)
         GadgetbridgeBleReceiver.register(this)
         assistantSession = AssistantSession(
             this,
-            llmClient,
+            modelRouter,
             assistantSettings,
             glassesFacade,
             languageModelManager,

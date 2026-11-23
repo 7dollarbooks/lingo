@@ -43,6 +43,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -75,6 +76,11 @@ fun SettingsScreen(
     val apiKey by viewModel.apiKey.collectAsState()
     val homeWifiSsids by viewModel.homeWifiSsids.collectAsState()
     val valhallaUrl by viewModel.valhallaBaseUrl.collectAsState()
+    val nitroFirst by viewModel.nitroFirst.collectAsState()
+    val nitroBaseUrl by viewModel.nitroBaseUrl.collectAsState()
+    val nitroModel by viewModel.nitroModel.collectAsState()
+    val nitroConnectTimeoutSec by viewModel.nitroConnectTimeoutSec.collectAsState()
+    val nitroReadTimeoutSec by viewModel.nitroReadTimeoutSec.collectAsState()
 
     LaunchedEffect(Unit) {
         viewModel.refreshLanguagePacks()
@@ -112,6 +118,17 @@ fun SettingsScreen(
                 ApiKeyCard(apiKey = apiKey, onSave = viewModel::setApiKey)
             }
             item {
+                NitroCard(
+                    enabled = nitroFirst,
+                    url = nitroBaseUrl,
+                    model = nitroModel,
+                    connectSec = nitroConnectTimeoutSec,
+                    readSec = nitroReadTimeoutSec,
+                    onEnabled = viewModel::setNitroFirst,
+                    onSave = viewModel::setNitroRoute,
+                )
+            }
+            item {
                 HomeWifiCard(ssids = homeWifiSsids, onSave = viewModel::setHomeWifiSsids)
             }
             item {
@@ -135,6 +152,80 @@ fun SettingsScreen(
                     onDownloadMobile = { viewModel.downloadLanguage(option.code, requireWifi = false) },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun NitroCard(
+    enabled: Boolean,
+    url: String,
+    model: String,
+    connectSec: Int,
+    readSec: Int,
+    onEnabled: (Boolean) -> Unit,
+    onSave: (String, String, Int, Int) -> Unit,
+) {
+    var draftUrl by remember(url) { mutableStateOf(url) }
+    var draftModel by remember(model) { mutableStateOf(model) }
+    var draftConnect by remember(connectSec) { mutableStateOf(connectSec.toString()) }
+    var draftRead by remember(readSec) { mutableStateOf(readSec.toString()) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Nitro first", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Ask the home model before Gemini. Clock questions stay on the phone.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = onEnabled)
+            }
+            OutlinedTextField(
+                value = draftUrl,
+                onValueChange = { draftUrl = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Nitro URL") },
+            )
+            OutlinedTextField(
+                value = draftModel,
+                onValueChange = { draftModel = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Model") },
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = draftConnect,
+                    onValueChange = { draftConnect = it.filter { ch -> ch.isDigit() } },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("Connect sec") },
+                )
+                OutlinedTextField(
+                    value = draftRead,
+                    onValueChange = { draftRead = it.filter { ch -> ch.isDigit() } },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("Read sec") },
+                )
+            }
+            FilledTonalButton(
+                onClick = {
+                    onSave(
+                        draftUrl,
+                        draftModel,
+                        draftConnect.toIntOrNull() ?: connectSec,
+                        draftRead.toIntOrNull() ?: readSec,
+                    )
+                },
+            ) { Text("Save Nitro") }
         }
     }
 }

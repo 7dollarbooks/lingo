@@ -86,7 +86,7 @@ class NavigationSession(
             holdWatch()
             holdForeground("Finding $query")
             if (!speech.acquireSpeech()) {
-                stop("Connect Shokz via Bluetooth and enable phone audio")
+                stop("Phone speaker or mic is not available")
                 return@launch
             }
             speechHeld = true

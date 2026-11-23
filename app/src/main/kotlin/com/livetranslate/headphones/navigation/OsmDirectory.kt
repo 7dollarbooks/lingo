@@ -37,7 +37,7 @@ class OsmDirectory(
     }
 
     private fun get(url: String): String? {
-        val request = Request.Builder().url(url).header("User-Agent", USER_AGENT).get().build()
+        val request = Request.Builder().url(url).header("User-Agent", USER_AGENT).header("X-Client-Id", CLIENT_ID).get().build()
         return execute(request)
     }
 
@@ -45,6 +45,7 @@ class OsmDirectory(
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", USER_AGENT)
+            .header("X-Client-Id", CLIENT_ID)
             .post(json.toRequestBody(JSON))
             .build()
         return execute(request)
@@ -60,5 +61,6 @@ class OsmDirectory(
     companion object {
         private val JSON = "application/json; charset=utf-8".toMediaType()
         const val USER_AGENT = "Lingo/1.0 (Android; personal navigation)"
+        const val CLIENT_ID = "com.livetranslate.headphones"
     }
 }

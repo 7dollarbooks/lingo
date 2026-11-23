@@ -3,7 +3,8 @@ package com.livetranslate.headphones.vision
 import android.util.Log
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.nl.languageid.LanguageIdentification
-import com.livetranslate.headphones.assistant.LlmClient
+import com.livetranslate.headphones.assistant.ModelRouter
+import com.livetranslate.headphones.assistant.Turn
 import com.livetranslate.headphones.glasses.StillProvenance
 import com.livetranslate.headphones.translation.LanguageModelManager
 import kotlinx.coroutines.Dispatchers
@@ -38,13 +39,14 @@ sealed class SignPipelineOutcome {
  */
 class SignTranslatePipeline(
     private val languageModelManager: LanguageModelManager,
-    private val llmClient: LlmClient,
+    private val modelRouter: ModelRouter,
 ) {
     private val languageId = LanguageIdentification.getClient()
 
     suspend fun run(
         jpegBytes: ByteArray,
         provenance: StillProvenance,
+        history: List<Turn> = emptyList(),
         onDownloading: (suspend () -> Unit)? = null,
         onGeminiText: ((String) -> Unit)? = null,
     ): SignPipelineOutcome = withContext(Dispatchers.IO) {
@@ -53,7 +55,7 @@ class SignTranslatePipeline(
             return@withContext if (provenance == StillProvenance.Glasses) {
                 SignPipelineOutcome.GlassesZeroOcr(GLASSES_ZERO_OCR_MESSAGE)
             } else {
-                return@withContext geminiFallback(jpegBytes, banner = BANNER_NO_TEXT, ocr.imageWidth, ocr.imageHeight, onGeminiText)
+                return@withContext geminiFallback(jpegBytes, BANNER_NO_TEXT, ocr.imageWidth, ocr.imageHeight, history, onGeminiText)
             }
         }
 
@@ -79,9 +81,10 @@ class SignTranslatePipeline(
             // Non-Latin / und — Gemini extract+translate
             return@withContext geminiFallback(
                 jpegBytes,
-                banner = BANNER_SCRIPT_UNSUPPORTED,
+                BANNER_SCRIPT_UNSUPPORTED,
                 ocr.imageWidth,
                 ocr.imageHeight,
+                history,
                 onGeminiText,
             )
         }
@@ -94,9 +97,10 @@ class SignTranslatePipeline(
                 Log.w(TAG, "translate pack download failed for $langCode", download.exceptionOrNull())
                 return@withContext geminiFallback(
                     jpegBytes,
-                    banner = BANNER_MODEL_FAILED,
+                    BANNER_MODEL_FAILED,
                     ocr.imageWidth,
                     ocr.imageHeight,
+                    history,
                     onGeminiText,
                 )
             }
@@ -130,14 +134,17 @@ class SignTranslatePipeline(
         banner: String?,
         imageWidth: Int,
         imageHeight: Int,
+        history: List<Turn>,
         onGeminiText: ((String) -> Unit)?,
     ): SignPipelineOutcome {
         return runCatching {
-            val answer = llmClient.askWithImage(
+            val answer = modelRouter.askWithImage(
+                feature = "sign",
                 prompt = SIGN_GEMINI_PROMPT,
                 jpegBytes = jpegBytes,
                 systemInstruction = SIGN_SYSTEM,
                 maxOutputTokens = 120,
+                history = history,
                 onText = onGeminiText,
             )
             SignPipelineOutcome.GeminiFallback(

@@ -54,7 +54,7 @@ data class VisionCaptureRequest(
  */
 class AssistantSession(
     context: Context,
-    private val llmClient: LlmClient,
+    private val modelRouter: ModelRouter,
     private val assistantSettings: AssistantSettings,
     private val glassesFacade: GlassesFacade,
     private val languageModelManager: LanguageModelManager,
@@ -69,7 +69,7 @@ class AssistantSession(
     private var engine: AssistantEngine? = null
 
     private val stillFileCache = StillFileCache(appContext)
-    private val signPipeline = SignTranslatePipeline(languageModelManager, llmClient)
+    private val signPipeline = SignTranslatePipeline(languageModelManager, modelRouter)
 
     private val _status = MutableStateFlow(AssistantStatus())
     val status: StateFlow<AssistantStatus> = _status.asStateFlow()
@@ -120,10 +120,10 @@ class AssistantSession(
     suspend fun start() {
         if (_status.value.isActive) return
         glassesFacade.tryAutoReconnect()
-        if (!audioRouter.start()) {
+        if (!audioRouter.startPreferred()) {
             _status.value = _status.value.copy(
                 isActive = false,
-                statusMessage = "Connect Shokz via Bluetooth and enable phone audio",
+                statusMessage = "Phone speaker or mic is not available",
             )
             return
         }
@@ -137,7 +137,7 @@ class AssistantSession(
         player.warmup()
         val newEngine = AssistantEngine(
             context = appContext,
-            llmClient = llmClient,
+            modelRouter = modelRouter,
             ttsPlayer = player,
             assistantSettings = assistantSettings,
             halfDuplex = halfDuplex,
@@ -173,10 +173,15 @@ class AssistantSession(
         }
 
         val spitOn = assistantSettings.spitModeEnabled.value
+        val listening = when {
+            spitOn -> "SPIT — listening for questions…"
+            audioRouter.phoneRoute -> "Listening on the phone for \"Hey Lingo\"…"
+            else -> "Listening for \"Hey Lingo\"…"
+        }
         _status.value = _status.value.copy(
             isActive = true,
             glassesConnected = glassesFacade.state.value is GlassesState.Ready,
-            statusMessage = if (spitOn) "SPIT — listening for questions…" else "Listening for \"Hey Lingo\"…",
+            statusMessage = listening,
         )
     }
 
@@ -210,8 +215,8 @@ class AssistantSession(
         val player = if (alreadyActive) {
             ttsPlayer
         } else {
-            if (!audioRouter.start()) {
-                _status.value = _status.value.copy(statusMessage = "Connect Shokz before asking Lingo")
+            if (!audioRouter.startPreferred()) {
+                _status.value = _status.value.copy(statusMessage = "Phone speaker or mic is not available")
                 return
             }
             RoutedTtsPlayer(
@@ -314,11 +319,13 @@ class AssistantSession(
         }
         val outcome = try {
             runCatching {
-                llmClient.askWithImage(
+                modelRouter.askWithImage(
+                    feature = "vision",
                     prompt = query.ifBlank { SignTranslatePipeline.OBJECT_IDENTIFY_PROMPT },
                     jpegBytes = capture.jpegBytes,
                     systemInstruction = OBJECT_SYSTEM,
                     maxOutputTokens = 48,
+                    history = engine?.recentTurns().orEmpty(),
                     onText = { partial -> updates.trySend(partial) },
                 )
             }
@@ -387,6 +394,7 @@ class AssistantSession(
             signPipeline.run(
                 jpegBytes = capture.jpegBytes,
                 provenance = capture.provenance,
+                history = engine?.recentTurns().orEmpty(),
                 onDownloading = {
                     showedDownload = true
                     publishVisionResult(downloadingPlaceholder, speak = false)
@@ -458,10 +466,12 @@ class AssistantSession(
         when (current) {
             is VisionResult.ObjectIdentify -> {
                 val outcome = runCatching {
-                    llmClient.askWithImage(
+                    modelRouter.askWithImage(
+                        feature = "vision-retry",
                         prompt = current.query.ifBlank { SignTranslatePipeline.OBJECT_IDENTIFY_PROMPT },
                         jpegBytes = bytes,
                         systemInstruction = OBJECT_SYSTEM,
+                        history = engine?.recentTurns().orEmpty(),
                     )
                 }
                 val offline = outcome.isFailure
@@ -592,11 +602,13 @@ class AssistantSession(
             }
         }
         val answer = try {
-            llmClient.askWithImage(
+            modelRouter.askWithImage(
+                feature = "vision-retry",
                 prompt = prompt,
                 jpegBytes = jpegBytes,
                 systemInstruction = systemInstruction,
                 maxOutputTokens = maxOutputTokens,
+                history = engine?.recentTurns().orEmpty(),
                 onText = { updates.trySend(it) },
             )
         } finally {

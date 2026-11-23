@@ -62,17 +62,13 @@ class TranslationSession(
             if (ok) routeHeld = true
             ok
         } else {
-            ensureShokz()
+            ensureAudio()
         }
         if (!routed) {
             _status.value = _status.value.copy(
                 isActive = false,
                 scoConnected = false,
-                statusMessage = if (conversation) {
-                    "Phone speaker or mic is not available"
-                } else {
-                    "Connect Shokz via Bluetooth and enable phone audio"
-                },
+                statusMessage = "Phone speaker or mic is not available",
             )
             return
         }
@@ -186,7 +182,7 @@ class TranslationSession(
 
     /** Navigation holds the Shokz speaker so a turn can be spoken while captions stay quiet. */
     suspend fun acquireSpeech(): Boolean {
-        if (!ensureShokz()) return false
+        if (!ensureAudio()) return false
         if (ttsPlayer == null) {
             val player = RoutedTtsPlayer(appContext, audioRouter)
             ttsPlayer = player
@@ -206,12 +202,21 @@ class TranslationSession(
         val spoken = "Watch. ${text.trim().replace('-', ' ')}"
         scope.launch {
             val cold = !routeHeld && speechHolds == 0
-            if (cold && audioRouter.activateMedia() == null) return@launch
+            var openedPhone = false
+            if (cold && audioRouter.activateMedia() == null) {
+                if (!audioRouter.startPhone()) return@launch
+                openedPhone = true
+                routeHeld = true
+            }
             val player = ttsPlayer ?: RoutedTtsPlayer(appContext, audioRouter).also { ttsPlayer = it }
             audioRouter.withMediaFocus { player.playClearly(spoken) }
             if (cold && !_status.value.isActive && speechHolds == 0) {
                 player.shutdown()
                 if (ttsPlayer === player) ttsPlayer = null
+                if (openedPhone) {
+                    audioRouter.stop()
+                    routeHeld = false
+                }
             }
         }
     }
@@ -229,20 +234,26 @@ class TranslationSession(
     }
 
     suspend fun testTts() {
-        if (!ensureShokz()) {
+        if (!ensureAudio()) {
             _status.value = _status.value.copy(
-                statusMessage = "Connect Shokz before TTS test",
+                statusMessage = "Phone speaker or mic is not available",
             )
             return
         }
         val player = ttsPlayer ?: RoutedTtsPlayer(appContext, audioRouter).also { ttsPlayer = it }
+        val onPhone = audioRouter.phoneRoute
         _status.value = _status.value.copy(
-            statusMessage = "Playing TTS test in headphones…",
+            statusMessage = if (onPhone) "Playing TTS test on the phone speaker…" else "Playing TTS test in headphones…",
             scoConnected = true,
             scoDeviceName = audioRouter.deviceName.value,
         )
+        val sample = if (onPhone) {
+            "Translation output test. You should hear this from the phone speaker."
+        } else {
+            "Translation output test. You should hear this in your Shokz headphones."
+        }
         runCatching {
-            player.play("Translation output test. You should hear this in your Shokz headphones.")
+            player.play(sample)
         }.onFailure {
             _status.value = _status.value.copy(statusMessage = "TTS test failed: ${it.message}")
         }.onSuccess {
@@ -258,7 +269,7 @@ class TranslationSession(
     fun startLoopback(): Boolean {
         scope.launch {
             stopTranslation()
-            if (!ensureShokz()) {
+            if (!ensureHeadset()) {
                 _status.value = _status.value.copy(
                     loopbackActive = false,
                     statusMessage = "SCO not available for loopback test",
@@ -307,8 +318,19 @@ class TranslationSession(
         textSink.clear(TextSource.CAPTION)
     }
 
-    private suspend fun ensureShokz(): Boolean {
+    private suspend fun ensureAudio(): Boolean {
         if (routeHeld) return true
+        val ok = audioRouter.startPreferred()
+        routeHeld = ok
+        return ok
+    }
+
+    private suspend fun ensureHeadset(): Boolean {
+        if (routeHeld && !audioRouter.phoneRoute) return true
+        if (routeHeld) {
+            audioRouter.stop()
+            routeHeld = false
+        }
         val ok = audioRouter.start()
         routeHeld = ok
         return ok

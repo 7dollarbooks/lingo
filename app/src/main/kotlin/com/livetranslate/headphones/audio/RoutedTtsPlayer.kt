@@ -55,7 +55,15 @@ class RoutedTtsPlayer(
      * Low-latency path for the assistant: speaks through the live TTS engine (no WAV
      * round-trip) as media, so it follows the Shokz A2DP route.
      */
-    suspend fun speak(text: String) = ttsMutex.withLock {
+    suspend fun speak(text: String) {
+        if (audioRouter.phoneRoute) {
+            play(text)
+            return
+        }
+        speakOnHeadset(text)
+    }
+
+    private suspend fun speakOnHeadset(text: String) = ttsMutex.withLock {
         withContext(Dispatchers.Main) {
             ensureTts()
             if (!ttsReady) return@withContext

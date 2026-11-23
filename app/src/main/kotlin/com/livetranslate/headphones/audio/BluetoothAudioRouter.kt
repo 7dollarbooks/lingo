@@ -111,8 +111,19 @@ class BluetoothAudioRouter(private val context: Context) {
     }
 
     /**
-     * Shokz speaker and Shokz mic, both required. Listen, the assistant, the TTS test,
-     * and loopback all enter through here.
+     * Headset when one is connected, otherwise the phone speaker and mic.
+     * Loopback still calls [start] because that test needs the Shokz mic.
+     */
+    suspend fun startPreferred(): Boolean {
+        updateHeadsetState()
+        if (_headset.value.connected && start()) return true
+        Log.i(TAG, "No headset route; using the phone speaker and mic")
+        return startPhone()
+    }
+
+    /**
+     * Shokz speaker and Shokz mic, both required. Loopback enters through here.
+     * Other modes use [startPreferred] so Lingo still runs with no headset.
      */
     suspend fun start(): Boolean {
         phoneRoute = false

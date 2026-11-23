@@ -56,6 +56,29 @@ class AssistantSettings(context: Context) {
     private val _homeWifiSsids = MutableStateFlow(readHomeWifiSsids())
     val homeWifiSsids: StateFlow<List<String>> = _homeWifiSsids.asStateFlow()
 
+    private val _nitroFirst = MutableStateFlow(prefs.getBoolean(KEY_NITRO_FIRST, true))
+    val nitroFirst: StateFlow<Boolean> = _nitroFirst.asStateFlow()
+
+    private val _nitroBaseUrl = MutableStateFlow(
+        prefs.getString(KEY_NITRO_URL, DEFAULT_NITRO_URL) ?: DEFAULT_NITRO_URL,
+    )
+    val nitroBaseUrl: StateFlow<String> = _nitroBaseUrl.asStateFlow()
+
+    private val _nitroModel = MutableStateFlow(
+        prefs.getString(KEY_NITRO_MODEL, DEFAULT_NITRO_MODEL) ?: DEFAULT_NITRO_MODEL,
+    )
+    val nitroModel: StateFlow<String> = _nitroModel.asStateFlow()
+
+    private val _nitroConnectTimeoutSec = MutableStateFlow(
+        prefs.getInt(KEY_NITRO_CONNECT, DEFAULT_NITRO_CONNECT_SEC),
+    )
+    val nitroConnectTimeoutSec: StateFlow<Int> = _nitroConnectTimeoutSec.asStateFlow()
+
+    private val _nitroReadTimeoutSec = MutableStateFlow(
+        prefs.getInt(KEY_NITRO_READ, DEFAULT_NITRO_READ_SEC),
+    )
+    val nitroReadTimeoutSec: StateFlow<Int> = _nitroReadTimeoutSec.asStateFlow()
+
     fun setApiKey(key: String) {
         runCatching {
             securePrefs.edit().putString(KEY_API_KEY, key).apply()
@@ -91,6 +114,28 @@ class AssistantSettings(context: Context) {
     fun setTtsVoiceStyle(style: TtsVoiceStyle) {
         prefs.edit().putString(KEY_VOICE, style.name).apply()
         _ttsVoiceStyle.value = style
+    }
+
+    fun setNitroFirst(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_NITRO_FIRST, enabled).apply()
+        _nitroFirst.value = enabled
+    }
+
+    fun setNitroRoute(baseUrl: String, model: String, connectTimeoutSec: Int, readTimeoutSec: Int) {
+        val url = baseUrl.trim().ifBlank { DEFAULT_NITRO_URL }
+        val tag = model.trim().ifBlank { DEFAULT_NITRO_MODEL }
+        val connect = connectTimeoutSec.coerceIn(1, 30)
+        val read = readTimeoutSec.coerceIn(2, 120)
+        prefs.edit()
+            .putString(KEY_NITRO_URL, url)
+            .putString(KEY_NITRO_MODEL, tag)
+            .putInt(KEY_NITRO_CONNECT, connect)
+            .putInt(KEY_NITRO_READ, read)
+            .apply()
+        _nitroBaseUrl.value = url
+        _nitroModel.value = tag
+        _nitroConnectTimeoutSec.value = connect
+        _nitroReadTimeoutSec.value = read
     }
 
     /** Wi-Fi network names Lingo trusts for its cloud calls; anywhere else it forces
@@ -146,7 +191,16 @@ class AssistantSettings(context: Context) {
         private const val KEY_SPIT = "spit_mode_enabled"
         private const val KEY_VOICE = "tts_voice_style"
         private const val KEY_HOME_WIFI = "home_wifi_ssids"
+        private const val KEY_NITRO_FIRST = "nitro_first"
+        private const val KEY_NITRO_URL = "nitro_base_url"
+        private const val KEY_NITRO_MODEL = "nitro_model"
+        private const val KEY_NITRO_CONNECT = "nitro_connect_timeout_sec"
+        private const val KEY_NITRO_READ = "nitro_read_timeout_sec"
         private const val SSID_DELIMITER = "|"
+        const val DEFAULT_NITRO_URL = "http://100.110.108.65:11434"
+        const val DEFAULT_NITRO_MODEL = "lingo-qwen3-vl:4b"
+        const val DEFAULT_NITRO_CONNECT_SEC = 2
+        const val DEFAULT_NITRO_READ_SEC = 10
         private val DEFAULT_HOME_WIFI_SSIDS = listOf("Waupoos24", "Waupoos24-5G")
     }
 }

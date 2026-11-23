@@ -15,6 +15,7 @@ import com.livetranslate.headphones.ExchangeKind
 import com.livetranslate.headphones.audio.HalfDuplexPolicy
 import com.livetranslate.headphones.memory.RememberIntent
 import com.livetranslate.headphones.audio.RoutedTtsPlayer
+import com.livetranslate.headphones.translation.SpeechSupport
 import com.livetranslate.headphones.vision.VisionTimings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,13 +30,14 @@ import kotlinx.coroutines.withContext
  * wake-word detection (on-demand Q&A) and an ambient rolling buffer (real-time proactive
  * help).
  *
- * Uses the platform (cloud-capable) [SpeechRecognizer] rather than the on-device SODA
- * recognizer — the assistant already needs network for Gemini, and online English STT
- * is much more reliable for short wake phrases over Bluetooth SCO.
+ * Prefers the on-device SODA recognizer when the English pack is installed. That path is
+ * faster and stays on the phone. Cloud speech still hears a noisy Shokz mic more clearly;
+ * if a marina or wind test misses "Hey Lingo", the next step is a tiny on-device model,
+ * not sending assistant audio to the cloud again. Wake matching still reads the transcript.
  */
 class AssistantEngine(
     private val context: Context,
-    private val llmClient: LlmClient,
+    private val modelRouter: ModelRouter,
     private val ttsPlayer: RoutedTtsPlayer,
     private val assistantSettings: AssistantSettings,
     private val halfDuplex: HalfDuplexPolicy,
@@ -52,6 +54,7 @@ class AssistantEngine(
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var speechRecognizer: SpeechRecognizer? = null
+    private var onDeviceStt = false
     private var active = false
 
     private val ambientBuffer = AmbientTranscriptBuffer()
@@ -110,6 +113,15 @@ class AssistantEngine(
         override fun onError(error: Int) {
             Log.w(TAG, "onError: ${speechErrorLabel(error)} ($error) lastPartial='$lastPartial'")
             if (!active) return
+            if (onDeviceStt && (
+                    error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ||
+                        error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
+                    )
+            ) {
+                Log.w(TAG, "on-device English pack missing; using cloud speech until it installs")
+                switchToCloudRecognizer()
+                return
+            }
             if (!wakeHandledForUtterance && lastPartial.isNotBlank()) {
                 handleUtterance(lastPartial)
             }
@@ -187,8 +199,13 @@ class AssistantEngine(
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             throw IllegalStateException("Speech recognition is not available")
         }
-        // Cloud-capable platform recognizer: better short-phrase English + BT SCO than SODA.
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+        onDeviceStt = SpeechSupport.onDeviceAvailable(context)
+        if (onDeviceStt) {
+            SpeechSupport.buildPlan(context, listOf("en-US")) { plan ->
+                Log.i(TAG, "assistant speech plan onDevice=${plan.onDevice} primary=${plan.primary}")
+            }
+        }
+        speechRecognizer = SpeechSupport.createRecognizer(context, onDeviceStt).apply {
             setRecognitionListener(recognitionListener)
         }
         active = true
@@ -205,8 +222,18 @@ class AssistantEngine(
         muteRecognizerBeep()
         startListening()
         startProactiveLoop()
-        // Warm TLS to Gemini on the home/cellular route so the first question is snappy.
-        scope.launch { runCatching { llmClient.warmup() } }
+        scope.launch { runCatching { modelRouter.warmupNitro() } }
+    }
+
+    fun recentTurns(): List<Turn> = conversationHistory.toList()
+
+    private fun switchToCloudRecognizer() {
+        onDeviceStt = false
+        runCatching { speechRecognizer?.destroy() }
+        speechRecognizer = SpeechSupport.createRecognizer(context, onDevice = false).apply {
+            setRecognitionListener(recognitionListener)
+        }
+        restartListening(200)
     }
 
     suspend fun stop() = withContext(Dispatchers.Main) {
@@ -280,7 +307,7 @@ class AssistantEngine(
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, onDeviceStt)
             // One long session while idle. A short silence end restarts recognition and
             // the platform plays a beep on every start.
             val spit = assistantSettings.spitModeEnabled.value
@@ -437,11 +464,13 @@ class AssistantEngine(
                     runVisionTurn(visionKind, query)
                 } else {
                     val history = if (isSpit) conversationHistory.takeLast(SPIT_MAX_HISTORY_TURNS) else conversationHistory
-                    val reply = llmClient.ask(
-                        query,
-                        history,
+                    val reply = modelRouter.ask(
+                        feature = "assistant",
+                        prompt = query,
+                        history = history,
                         systemInstruction = systemPrompt,
                         maxOutputTokens = if (isSpit) SPIT_MAX_OUTPUT_TOKENS else 120,
+                        shortcuts = true,
                     )
                     conversationHistory = (conversationHistory + Turn("user", query) + Turn("model", reply))
                         .takeLast(MAX_HISTORY_TURNS)
@@ -521,13 +550,22 @@ class AssistantEngine(
                 if (sinceLastSpokenMs < MIN_PROACTIVE_COOLDOWN_MS) continue
                 val window = ambientBuffer.consumeIfNew() ?: continue
                 runCatching {
-                    llmClient.ask(
+                    modelRouter.ask(
+                        feature = "proactive",
                         prompt = "Recent ambient conversation:\n\"$window\"",
                         systemInstruction = proactiveSystemPrompt(level),
+                        shortcuts = false,
+                        geminiFallback = false,
                     )
                 }.onSuccess { reply ->
-                    val trimmed = reply.trim()
-                    if (trimmed.isBlank() || trimmed.equals(NO_RESPONSE_SENTINEL, ignoreCase = true)) return@onSuccess
+                    val trimmed = reply.trim().trimEnd('.', '!', ' ')
+                    if (trimmed.isBlank() ||
+                        trimmed.equals(NO_RESPONSE_SENTINEL, ignoreCase = true) ||
+                        trimmed.startsWith("DON'T KNOW", ignoreCase = true) ||
+                        trimmed.startsWith("DONT KNOW", ignoreCase = true)
+                    ) {
+                        return@onSuccess
+                    }
                     lastProactiveSpeechAtMs = System.currentTimeMillis()
                     onExchange(AssistantExchange(kind = ExchangeKind.TIP, query = null, response = trimmed))
                     runCatching { ttsPlayer.speak(trimmed) }

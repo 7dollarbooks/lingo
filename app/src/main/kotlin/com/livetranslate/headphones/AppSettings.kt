@@ -23,12 +23,17 @@ class AppSettings(context: Context) {
         runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, ThemeMode.SYSTEM.name)!!) }
             .getOrDefault(ThemeMode.SYSTEM)
 
-    fun valhallaBaseUrl(): String =
-        prefs.getString(KEY_VALHALLA, DEFAULT_VALHALLA)?.trim()?.ifBlank { DEFAULT_VALHALLA }
-            ?: DEFAULT_VALHALLA
+    fun valhallaBaseUrl(): String {
+        val stored = prefs.getString(KEY_VALHALLA, null)
+        val resolved = resolveValhallaBaseUrl(stored)
+        if (stored != null && stored.trim().trimEnd('/') != resolved) {
+            prefs.edit().putString(KEY_VALHALLA, resolved).apply()
+        }
+        return resolved
+    }
 
     fun setValhallaBaseUrl(url: String) {
-        val clean = url.trim().ifBlank { DEFAULT_VALHALLA }
+        val clean = resolveValhallaBaseUrl(url)
         prefs.edit().putString(KEY_VALHALLA, clean).apply()
         _valhallaBaseUrl.value = clean
     }
@@ -40,6 +45,18 @@ class AppSettings(context: Context) {
         private const val PREFS = "app_settings"
         private const val KEY_THEME = "theme_mode"
         private const val KEY_VALHALLA = "valhalla_base_url"
-        const val DEFAULT_VALHALLA = "https://valhalla.openstreetmap.de"
+        const val DEFAULT_VALHALLA = "https://valhalla1.openstreetmap.de"
     }
+}
+
+/**
+ * The bare valhalla.openstreetmap.de host is the demo website. POST /route there
+ * answers 405, so a saved copy of that address has to move to the API host.
+ */
+internal fun resolveValhallaBaseUrl(saved: String?): String {
+    val trimmed = saved?.trim()?.trimEnd('/').orEmpty()
+    if (trimmed.isEmpty()) return AppSettings.DEFAULT_VALHALLA
+    val host = runCatching { java.net.URI(trimmed).host }.getOrNull()?.lowercase()
+    if (host == "valhalla.openstreetmap.de") return AppSettings.DEFAULT_VALHALLA
+    return trimmed
 }

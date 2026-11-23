@@ -98,6 +98,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setHomeWifiSsids(names: List<String>) = assistantSettings.setHomeWifiSsids(names)
 
+    val nitroFirst: StateFlow<Boolean> = assistantSettings.nitroFirst
+
+    fun setNitroFirst(enabled: Boolean) = assistantSettings.setNitroFirst(enabled)
+
+    val nitroBaseUrl: StateFlow<String> = assistantSettings.nitroBaseUrl
+
+    val nitroModel: StateFlow<String> = assistantSettings.nitroModel
+
+    val nitroConnectTimeoutSec: StateFlow<Int> = assistantSettings.nitroConnectTimeoutSec
+
+    val nitroReadTimeoutSec: StateFlow<Int> = assistantSettings.nitroReadTimeoutSec
+
+    fun setNitroRoute(baseUrl: String, model: String, connectTimeoutSec: Int, readTimeoutSec: Int) =
+        assistantSettings.setNitroRoute(baseUrl, model, connectTimeoutSec, readTimeoutSec)
+
     // Recomputed on every connectivity tick (transport change or SSID-only change via
     // epoch) so the UI always reflects where Lingo's next cloud call will actually go.
     val homeNetworkStatus: StateFlow<HomeNetworkStatus> = combine(
